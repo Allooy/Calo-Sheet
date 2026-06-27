@@ -870,6 +870,79 @@ function EditTab({ adminEmail }: { adminEmail: string }) {
 /* ============ Upload ============ */
 type ParsedRow = { agent_name: string; date: string; shift_code: string; match?: Agent };
 
+// Parse the monthly schedule GRID (people down the rows, dates across the top,
+// title block + time legend ignored) into long-format rows. Returns null if the
+// file isn't a grid (so we can fall back to the plain long-format parser).
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+function parseScheduleGrid(rows: string[][]): { agent_name: string; date: string; shift_code: string }[] | null {
+  const dayRe = /^[A-Za-z]+-(\d{1,2})$/; // "Sunday-28"
+  const isHeaderRow = (r: string[]) => r.filter((c) => dayRe.test((c || "").trim())).length >= 5;
+
+  const headerIdx = rows.findIndex(isHeaderRow);
+  if (headerIdx < 0) return null;
+
+  // Month + year from a "Jul/2026" / "July 2026" token anywhere in the file.
+  let pM: number | null = null, pY: number | null = null;
+  const monRe = /([A-Za-z]{3,9})\s*[/\-\s]\s*(\d{4})/;
+  for (const r of rows) {
+    for (const c of r) {
+      const m = (c || "").trim().match(monRe);
+      const mi = m ? MONTHS[m[1].slice(0, 3).toLowerCase()] : undefined;
+      if (m && mi !== undefined) { pM = mi; pY = parseInt(m[2], 10); break; }
+    }
+    if (pM !== null) break;
+  }
+  if (pM === null) {
+    const first = (rows[headerIdx][0] || "").trim().slice(0, 3).toLowerCase();
+    if (MONTHS[first] !== undefined) { pM = MONTHS[first]; pY = new Date().getFullYear(); }
+  }
+  if (pM === null || pY === null) return null;
+
+  // date columns
+  const headerRow = rows[headerIdx];
+  const cols: { idx: number; day: number }[] = [];
+  for (let j = 1; j < headerRow.length; j++) {
+    const m = (headerRow[j] || "").trim().match(dayRe);
+    if (m) cols.push({ idx: j, day: parseInt(m[1], 10) });
+  }
+  if (!cols.length) return null;
+
+  // map columns → ISO dates (leading days before the "1" belong to prev month;
+  // roll the month forward whenever the day number drops).
+  const idx1 = cols.findIndex((c) => c.day === 1);
+  let y = pY, mo = pM;
+  if (idx1 > 0) { mo -= 1; if (mo < 0) { mo = 11; y--; } }
+  const dateByCol = new Map<number, string>();
+  for (let k = 0; k < cols.length; k++) {
+    if (k > 0 && cols[k].day < cols[k - 1].day) { mo++; if (mo > 11) { mo = 0; y++; } }
+    dateByCol.set(cols[k].idx, `${y}-${pad2(mo + 1)}-${pad2(cols[k].day)}`);
+  }
+
+  // canonical code lookup (skips times/junk/unknown codes like "UK S1")
+  const codeByUpper = new Map<string, string>();
+  for (const c of ALL_SHIFT_CODES) codeByUpper.set(c.toUpperCase(), c);
+
+  const out: { agent_name: string; date: string; shift_code: string }[] = [];
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const name = (r[0] || "").trim();
+    if (!name || isHeaderRow(r)) continue; // skip repeated section headers
+    for (const { idx } of cols) {
+      const cell = (r[idx] || "").trim();
+      if (!cell) continue;
+      const code = codeByUpper.get(cell.toUpperCase());
+      const date = dateByCol.get(idx);
+      if (code && date) out.push({ agent_name: name, date, shift_code: code });
+    }
+  }
+  return out.length ? out : null;
+}
+
 function UploadTab({ adminEmail }: { adminEmail: string }) {
   const [drag, setDrag] = useState(false);
   const [parsed, setParsed] = useState<ParsedRow[] | null>(null);
@@ -902,11 +975,16 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
       setParsedAgents(rows.map((r) => ({ ...r, exists: have.has(r.email) })));
       setParsed(null);
     } else {
-      const rows: ParsedRow[] = res.data.map((r) => ({
-        agent_name: (r.agent_name || r.name || r.Name || "").trim(),
-        date: (r.date || r.Date || "").trim(),
-        shift_code: (r.shift_code || r.shift || r.Shift || "").trim(),
-      }));
+      // Try the monthly grid first; fall back to plain long-format columns.
+      const matrix = (Papa.parse<string[]>(text, { skipEmptyLines: false }).data) as unknown as string[][];
+      const grid = parseScheduleGrid(matrix);
+      const rows: ParsedRow[] = grid
+        ? grid
+        : res.data.map((r) => ({
+            agent_name: (r.agent_name || r.name || r.Name || "").trim(),
+            date: (r.date || r.Date || "").trim(),
+            shift_code: (r.shift_code || r.shift || r.Shift || "").trim(),
+          }));
       const names = [...new Set(rows.map((r) => r.agent_name).filter(Boolean))];
       const { data: agents } = await supabase
         .from("agents")
@@ -1015,7 +1093,7 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
         <div className="mt-3 font-semibold">Drop CSV or click to browse</div>
         <div className="text-xs text-slate-500 mt-1">
           {mode === "schedules"
-            ? "Columns: agent_name, date (YYYY-MM-DD), shift_code"
+            ? "Monthly grid (people × dates) or columns: agent_name, date, shift_code — auto-detected"
             : "Columns: name, email, role (agent|admin)"}
         </div>
         <input
