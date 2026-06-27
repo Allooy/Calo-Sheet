@@ -225,12 +225,10 @@ function TodayPage() {
                   >
                     <Avatar name={a.name} size="md" />
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-[13px] font-semibold truncate text-slate-800">{a.name}</span>
-                        {a.is_lead && <LeadBadge />}
-                      </div>
-                      <div className="mt-1">
+                      <div className="text-[13px] font-semibold truncate text-slate-800">{a.name}</div>
+                      <div className="mt-1 flex items-center gap-1.5">
                         <ShiftBadge code={s.shift_code} size="sm" />
+                        {a.is_lead && <LeadBadge />}
                       </div>
                     </div>
                   </GlassCard>
