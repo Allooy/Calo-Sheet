@@ -5,6 +5,7 @@ import { Search, Calendar as CalIcon } from "lucide-react";
 import { GlassCard } from "@/components/GlassCard";
 import { Avatar } from "@/components/Avatar";
 import { LeadBadge } from "@/components/LeadBadge";
+import { TeammateScheduleModal } from "@/components/TeammateScheduleModal";
 import { ShiftBadge } from "@/components/ShiftBadge";
 import { Skeleton } from "@/components/Skeleton";
 import { EmptyIllustration } from "@/components/EmptyIllustration";
@@ -34,6 +35,7 @@ function TeamPage() {
   const [date, setDate] = useState(() => new Date());
   const [filter, setFilter] = useState<"all" | ShiftCategory>(initialCat);
   const [q, setQ] = useState("");
+  const [viewAgent, setViewAgent] = useState<Agent | null>(null);
   const [loading, setLoading] = useState(true);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -255,16 +257,20 @@ function TeamPage() {
             style={{ opacity: loading ? 0.55 : 1 }}
           >
             {onShift.map(({ agent, schedule }) => (
-              <Row key={agent.id} agent={agent} schedule={schedule} />
+              <Row key={agent.id} agent={agent} schedule={schedule} onClick={() => setViewAgent(agent)} />
             ))}
             {offShift.length > 0 && onShift.length > 0 && (
               <div className="label-caps text-slate-500 mt-4 mb-1 px-1">Off today</div>
             )}
             {offShift.map(({ agent, schedule }) => (
-              <Row key={agent.id} agent={agent} schedule={schedule} dimmed />
+              <Row key={agent.id} agent={agent} schedule={schedule} dimmed onClick={() => setViewAgent(agent)} />
             ))}
           </div>
         )}
+
+      {viewAgent && (
+        <TeammateScheduleModal agent={viewAgent} onClose={() => setViewAgent(null)} />
+      )}
     </div>
   );
 }
@@ -273,23 +279,23 @@ function Row({
   agent,
   schedule,
   dimmed = false,
+  onClick,
 }: {
   agent: Agent;
   schedule: Schedule | null;
   dimmed?: boolean;
+  onClick?: () => void;
 }) {
   return (
     <GlassCard
       hoverable
-      className={`p-3 flex items-center gap-3 ${dimmed ? "opacity-60" : ""}`}
+      onClick={onClick}
+      className={`p-3 flex items-center gap-3 cursor-pointer active:scale-[0.99] ${dimmed ? "opacity-60" : ""}`}
     >
       <Avatar name={agent.name} size="sm" />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-sm font-medium truncate">{agent.name}</span>
-          {agent.is_lead && <LeadBadge />}
-        </div>
-        <div className="text-[11px] text-slate-500 truncate">{agent.email}</div>
+      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+        <span className="text-sm font-medium truncate">{agent.name}</span>
+        {agent.is_lead && <LeadBadge />}
       </div>
       <ShiftBadge code={schedule?.shift_code ?? "—"} size="sm" />
     </GlassCard>

@@ -25,7 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data } = await supabase
       .from("agents")
       .select("*")
-      .eq("email", s.user.email)
+      .ilike("email", s.user.email.trim())
       .maybeSingle();
     setAgent((data as Agent | null) ?? null);
   }
