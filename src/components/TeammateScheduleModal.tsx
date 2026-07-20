@@ -15,7 +15,7 @@ import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Avatar } from "./Avatar";
 import { Skeleton } from "./Skeleton";
 import { supabase, type Agent, type Schedule } from "@/lib/supabase";
-import { categoryStyle, shiftCategory, type ShiftCategory } from "@/lib/shifts";
+import { categoryStyle, codeStyle, shiftCategory, type ShiftCategory } from "@/lib/shifts";
 
 const SHORT_CODE: Record<string, string> = {
   "PUBLIC HOLIDAY": "PH",
@@ -26,11 +26,6 @@ function cellCode(code: string) {
   const up = code.trim().toUpperCase();
   if (SHORT_CODE[up]) return SHORT_CODE[up];
   return code.length > 4 ? code.slice(0, 4) : code;
-}
-function codeColor(cat: ShiftCategory, s: ReturnType<typeof categoryStyle>) {
-  if (cat === "graveyard") return "#4338ca";
-  if (cat === "off") return "#b91c1c";
-  return s.text;
 }
 
 export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
@@ -168,10 +163,9 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
                 const row = byDate.get(format(d, "yyyy-MM-dd"));
                 const today = isSameDay(d, new Date());
                 const inMonth = isSameMonth(d, cursor);
-                const cat = shiftCategory(row?.shift_code);
-                const s = categoryStyle(cat);
+                const s = codeStyle(row?.shift_code);
                 const empty = !row;
-                const cc = codeColor(cat, s);
+                const cc = s.text;
                 return (
                   <div
                     key={d.toISOString()}
@@ -181,9 +175,7 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
                         ? "linear-gradient(160deg, #61c497, #3d9a70)"
                         : empty
                           ? "rgba(241,245,249,0.5)"
-                          : cat === "off"
-                            ? "rgba(254,226,226,0.75)"
-                            : `${s.dot}1f`,
+                          : `${s.dot}1f`,
                       boxShadow: today ? "0 8px 20px rgba(82,183,136,0.4)" : "none",
                     }}
                   >

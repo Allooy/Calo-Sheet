@@ -1,4 +1,4 @@
-import { categoryStyle, shiftCategory } from "@/lib/shifts";
+import { codeStyle } from "@/lib/shifts";
 
 export function ShiftBadge({
   code,
@@ -10,8 +10,7 @@ export function ShiftBadge({
   className?: string;
 }) {
   const display = (code ?? "—").toString();
-  const cat = shiftCategory(code);
-  const s = categoryStyle(cat);
+  const s = codeStyle(code);
   const sizing =
     size === "xl"
       ? "text-[28px] px-6 py-3 gap-3"

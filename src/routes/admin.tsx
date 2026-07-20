@@ -38,7 +38,7 @@ import {
   type AuditLog,
   type Schedule,
 } from "@/lib/supabase";
-import { ALL_SHIFT_CODES, categoryStyle, shiftCategory } from "@/lib/shifts";
+import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory } from "@/lib/shifts";
 
 const TABS = [
   { key: "overview", label: "Overview" },
@@ -287,8 +287,7 @@ function GridTab() {
                     {days.map((d) => {
                       const dk = format(d, "yyyy-MM-dd");
                       const r = lookup.get(`${a.id}|${dk}`);
-                      const cat = shiftCategory(r?.shift_code);
-                      const s = categoryStyle(cat);
+                      const s = codeStyle(r?.shift_code);
                       return (
                         <td
                           key={dk}
@@ -552,8 +551,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
         <div className="flex flex-wrap gap-1.5">
           {palette.map((code) => {
             const isErase = code === ERASE;
-            const cat = shiftCategory(code);
-            const s = categoryStyle(cat);
+            const s = codeStyle(code);
             const active = brush === code;
             return (
               <button
@@ -564,7 +562,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
                 }`}
                 style={{
                   background: isErase ? "#f1f5f9" : s.bg,
-                  color: isErase ? "#64748b" : (cat === "graveyard" ? "#4338ca" : s.text),
+                  color: isErase ? "#64748b" : s.text,
                   // @ts-expect-error css var for ring color
                   "--tw-ring-color": isErase ? "#94a3b8" : s.dot,
                   boxShadow: active ? `0 2px 10px ${isErase ? "rgba(148,163,184,0.4)" : s.dot + "55"}` : "none",
@@ -641,8 +639,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
                       const orig = lookup.get(key)?.shift_code ?? null;
                       const eff = edits.has(key) ? edits.get(key)! : orig;
                       const changed = eff !== orig;
-                      const cat = shiftCategory(eff);
-                      const s = categoryStyle(cat);
+                      const s = codeStyle(eff);
                       return (
                         <td key={dk} className="p-0.5 border-b border-white/30 text-center">
                           <div
@@ -652,7 +649,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
                             className="relative mx-auto rounded-md px-1 py-1 text-[10px] font-bold uppercase cursor-pointer transition-colors"
                             style={{
                               background: eff ? s.bg : "transparent",
-                              color: eff ? (cat === "graveyard" ? "#4338ca" : s.text) : "#cbd5e1",
+                              color: eff ? s.text : "#cbd5e1",
                               boxShadow: changed ? `inset 0 0 0 2px ${s.dot}` : "none",
                               touchAction: "pan-x pan-y",
                             }}

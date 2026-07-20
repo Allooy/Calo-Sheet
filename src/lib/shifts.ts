@@ -22,10 +22,18 @@ export function categoryStyle(cat: ShiftCategory) {
     case "graveyard":
       return { bg: "#e0e7ff", text: "#4338ca", dot: "#6366f1", soft: "rgba(224,231,255,0.6)" };
     case "off":
-      return { bg: "#fee2e2", text: "#b91c1c", dot: "#ef4444", soft: "rgba(254,226,226,0.6)" };
+      return { bg: "#f1f5f9", text: "#64748b", dot: "#94a3b8", soft: "rgba(241,245,249,0.6)" };
     case "other":
       return { bg: "#fef9c3", text: "#854d0e", dot: "#eab308", soft: "rgba(254,249,195,0.6)" };
   }
+}
+
+// Per-code styling: the literal OFF code is light red; every other code (AL, SL,
+// DL, holidays, shifts…) follows its category color.
+const OFF_STYLE = { bg: "#ffe5e5", text: "#dc2626", dot: "#f87171", soft: "rgba(255,229,229,0.55)" };
+export function codeStyle(code: string | null | undefined) {
+  if ((code ?? "").trim().toUpperCase() === "OFF") return OFF_STYLE;
+  return categoryStyle(shiftCategory(code));
 }
 
 export const ALL_SHIFT_CODES = [

@@ -63,7 +63,7 @@ function TodayPage() {
   // graveyard text (#a5b4fc) is designed for dark backgrounds — use the deeper dot color on white
   const heroCodeColor =
     myCat === "graveyard" ? "#4338ca" :
-    myCat === "off" ? "#b91c1c" :
+    myCat === "off" ? "#64748b" :
     myCatStyle.text;
 
   const tomorrowRow = agent ? tomorrowSchedules.find((s) => s.agent_id === agent.id) : null;
@@ -71,7 +71,7 @@ function TodayPage() {
   const tomorrowTime = tomorrowRow ? formatTimeRange(tomorrowRow.shift_code, shiftTypes) : null;
   const tomorrowCodeColor =
     tomorrowCat === "graveyard" ? "#4338ca" :
-    tomorrowCat === "off" ? "#b91c1c" :
+    tomorrowCat === "off" ? "#64748b" :
     categoryStyle(tomorrowCat).text;
 
   const teammates = useMemo(() => {

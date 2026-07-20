@@ -14,7 +14,7 @@ import { Avatar } from "./Avatar";
 import { Skeleton } from "./Skeleton";
 import { LeadBadge } from "./LeadBadge";
 import { supabase, type Agent, type Schedule } from "@/lib/supabase";
-import { categoryStyle, shiftCategory } from "@/lib/shifts";
+import { codeStyle } from "@/lib/shifts";
 
 const OV_SHORT: Record<string, string> = {
   "PUBLIC HOLIDAY": "PH",
@@ -143,9 +143,8 @@ export function TeamMonthGrid() {
                     {days.map((d) => {
                       const dk = format(d, "yyyy-MM-dd");
                       const r = lookup.get(`${a.id}|${dk}`);
-                      const cat = shiftCategory(r?.shift_code);
-                      const s = categoryStyle(cat);
-                      const cc = cat === "graveyard" ? "#4338ca" : cat === "off" ? "#b91c1c" : s.text;
+                      const s = codeStyle(r?.shift_code);
+                      const cc = s.text;
                       return (
                         <td key={dk} className="p-0.5 border-b border-white/30 text-center">
                           {r ? (

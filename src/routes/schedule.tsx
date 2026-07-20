@@ -22,6 +22,7 @@ import { useAuth } from "@/lib/auth";
 import { supabase, type Agent, type Schedule, type ShiftType } from "@/lib/supabase";
 import {
   categoryStyle,
+  codeStyle,
   formatTimeRange,
   shiftCategory,
   DEFAULT_TIMES,
@@ -267,8 +268,7 @@ function SchedulePage() {
                 const row = byDate.get(format(d, "yyyy-MM-dd"));
                 const today = isSameDay(d, new Date());
                 const inMonth = isSameMonth(d, cursor);
-                const cat = shiftCategory(row?.shift_code);
-                const s = categoryStyle(cat);
+                const s = codeStyle(row?.shift_code);
                 const empty = !row;
                 return (
                   <button
