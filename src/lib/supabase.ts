@@ -72,3 +72,14 @@ export type AuditLog = {
   details: Record<string, unknown> | null;
   created_at: string;
 };
+
+export type RequestStatus = "open" | "resolved" | "dismissed";
+export type ShiftRequest = {
+  id: string;
+  agent_id: string;
+  message: string;
+  status: RequestStatus;
+  admin_note: string | null;
+  created_at: string;
+  resolved_at: string | null;
+};

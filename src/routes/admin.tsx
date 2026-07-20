@@ -38,11 +38,14 @@ import {
   type Agent,
   type AuditLog,
   type Schedule,
+  type ShiftRequest,
+  type RequestStatus,
 } from "@/lib/supabase";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory } from "@/lib/shifts";
 
 const TABS = [
   { key: "overview", label: "Overview" },
+  { key: "requests", label: "Requests" },
   { key: "grid", label: "Schedule Grid" },
   { key: "bulk", label: "Bulk Edit" },
   { key: "edit", label: "Edit Shifts" },
@@ -82,6 +85,7 @@ function AdminPage() {
         </div>
         <div key={tab} className="animate-[fade-in_0.2s_ease-out]">
           {tab === "overview" && <TeamMonthGrid />}
+          {tab === "requests" && <RequestsTab adminEmail={agent.email} />}
           {tab === "grid" && <GridTab />}
           {tab === "bulk" && <BulkTab adminEmail={agent.email} />}
           {tab === "edit" && <EditTab adminEmail={agent.email} />}
@@ -1503,6 +1507,114 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============ Requests ============ */
+const REQ_STATUS: Record<string, { bg: string; text: string; label: string }> = {
+  open: { bg: "#e0e7ff", text: "#4338ca", label: "Pending" },
+  resolved: { bg: "#d6f2e4", text: "#1e5a3d", label: "Approved" },
+  dismissed: { bg: "#fee2e2", text: "#b91c1c", label: "Declined" },
+};
+
+function RequestsTab({ adminEmail }: { adminEmail: string }) {
+  const [rows, setRows] = useState<ShiftRequest[]>([]);
+  const [agentsById, setAgentsById] = useState<Record<string, Agent>>({});
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<"open" | "all">("open");
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const [r, a] = await Promise.all([
+        supabase.from("requests").select("*").order("created_at", { ascending: false }),
+        supabase.from("agents").select("*"),
+      ]);
+      if (cancel) return;
+      const map: Record<string, Agent> = {};
+      for (const ag of (a.data as Agent[] | null) ?? []) map[ag.id] = ag;
+      setAgentsById(map);
+      setRows((r.data as ShiftRequest[] | null) ?? []);
+      setLoading(false);
+    })();
+    return () => { cancel = true; };
+  }, []);
+
+  async function setStatus(id: string, status: RequestStatus) {
+    const { error } = await supabase
+      .from("requests")
+      .update({ status, resolved_at: status === "open" ? null : new Date().toISOString() })
+      .eq("id", id);
+    if (error) return toast.error(error.message);
+    setRows((rs) => rs.map((x) => (x.id === id ? { ...x, status } : x)));
+    await supabase.from("audit_log").insert({ user_email: adminEmail, action: `request_${status}`, details: { id } });
+  }
+
+  const openCount = rows.filter((r) => r.status === "open").length;
+  const shown = rows.filter((r) => filter === "all" || r.status === "open");
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        {(["open", "all"] as const).map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all ${
+              filter === f ? "bg-[#1e5a3d] text-white" : "glass text-slate-600"
+            }`}
+          >
+            {f === "open" ? `Open (${openCount})` : "All"}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-16" />)}
+        </div>
+      ) : shown.length === 0 ? (
+        <GlassCard className="p-8 text-center text-sm text-slate-500">
+          {filter === "open" ? "No open requests." : "No requests yet."}
+        </GlassCard>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {shown.map((r) => {
+            const ag = agentsById[r.agent_id];
+            const s = REQ_STATUS[r.status] ?? REQ_STATUS.open;
+            return (
+              <GlassCard key={r.id} className="p-3 flex items-start gap-3">
+                <Avatar name={ag?.name ?? "?"} url={ag?.avatar_url} size="sm" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-semibold truncate">{ag?.name ?? "Unknown"}</span>
+                    {ag?.is_lead && <LeadBadge />}
+                  </div>
+                  <div className="text-sm text-slate-700 mt-0.5 whitespace-pre-wrap break-words">{r.message}</div>
+                  <div className="text-[10px] text-slate-400 mt-1">
+                    {format(new Date(r.created_at), "MMM d, HH:mm")}
+                  </div>
+                </div>
+                {r.status === "open" ? (
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <button onClick={() => setStatus(r.id, "resolved")} className="rounded-lg bg-[#52B788] text-white px-2.5 py-1 text-[11px] font-bold active:scale-95">
+                      Approve
+                    </button>
+                    <button onClick={() => setStatus(r.id, "dismissed")} className="rounded-lg bg-slate-100 text-slate-600 px-2.5 py-1 text-[11px] font-bold active:scale-95">
+                      Decline
+                    </button>
+                  </div>
+                ) : (
+                  <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-0.5" style={{ background: s.bg, color: s.text }}>
+                    {s.label}
+                  </span>
+                )}
+              </GlassCard>
+            );
+          })}
         </div>
       )}
     </div>

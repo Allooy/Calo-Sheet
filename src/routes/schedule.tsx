@@ -16,6 +16,7 @@ import { ChevronLeft, ChevronRight, X, Users } from "lucide-react";
 import { GlassCard } from "@/components/GlassCard";
 import { ShiftBadge } from "@/components/ShiftBadge";
 import { Avatar } from "@/components/Avatar";
+import { AgentRequests } from "@/components/AgentRequests";
 import { LeadBadge } from "@/components/LeadBadge";
 import { Skeleton } from "@/components/Skeleton";
 import { useAuth } from "@/lib/auth";
@@ -331,6 +332,8 @@ function SchedulePage() {
             </div>
           ))}
         </div>
+
+        {agent && <AgentRequests agentId={agent.id} />}
       </div>
 
       {selected && selectedRow && (
