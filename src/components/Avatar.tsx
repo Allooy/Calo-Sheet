@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { gradientFor, initials } from "@/lib/shifts";
 
 const SIZES = {
@@ -17,12 +18,18 @@ export function Avatar({
   size?: keyof typeof SIZES;
   className?: string;
 }) {
-  if (url) {
+  const [broken, setBroken] = useState(false);
+  // Reset the error state whenever the url changes (e.g. after a re-upload)
+  // so a fresh image gets another chance to load.
+  useEffect(() => setBroken(false), [url]);
+
+  if (url && !broken) {
     return (
       <img
         src={url}
         alt={name}
         title={name}
+        onError={() => setBroken(true)}
         className={`${SIZES[size]} ${className} rounded-full object-cover shrink-0 shadow-sm ring-1 ring-white/40`}
       />
     );
