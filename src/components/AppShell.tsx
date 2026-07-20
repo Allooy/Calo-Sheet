@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Clock, Calendar, Users, Shield } from "lucide-react";
+import { Clock, Calendar, Users, Shield, Table2 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@/lib/auth";
 import { UserMenu } from "./UserMenu";
@@ -8,6 +8,7 @@ const ITEMS = [
   { to: "/today", label: "Today", icon: Clock, admin: false },
   { to: "/schedule", label: "My Schedule", icon: Calendar, admin: false },
   { to: "/team", label: "Team", icon: Users, admin: false },
+  { to: "/roster", label: "Roster", icon: Table2, admin: false },
   { to: "/admin", label: "Admin", icon: Shield, admin: true },
 ] as const;
 
@@ -15,6 +16,7 @@ const TITLES: Record<string, string> = {
   "/today": "Today",
   "/schedule": "My Schedule",
   "/team": "Team",
+  "/roster": "Roster",
   "/admin": "Admin",
 };
 

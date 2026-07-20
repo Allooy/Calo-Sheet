@@ -223,7 +223,7 @@ function TodayPage() {
                     className="p-3 flex items-center gap-3 min-w-[190px] md:min-w-0"
                     style={{ animation: `scale-in 0.25s ease-out ${i * 20}ms both` }}
                   >
-                    <Avatar name={a.name} size="md" />
+                    <Avatar name={a.name} url={a.avatar_url} size="md" />
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-semibold truncate text-slate-800">{a.name}</div>
                       <div className="mt-1 flex items-center gap-1.5">

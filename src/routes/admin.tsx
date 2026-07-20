@@ -5,7 +5,6 @@ import {
   eachDayOfInterval,
   endOfMonth,
   format,
-  isSameDay,
   startOfMonth,
   subMonths,
 } from "date-fns";
@@ -21,11 +20,15 @@ import {
   Undo2,
   Eraser,
   Crown,
+  Pencil,
+  Trash2,
+  ImagePlus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GlassCard } from "@/components/GlassCard";
 import { Avatar } from "@/components/Avatar";
 import { LeadBadge } from "@/components/LeadBadge";
+import { TeamMonthGrid } from "@/components/TeamMonthGrid";
 import { ShiftBadge } from "@/components/ShiftBadge";
 import { Skeleton } from "@/components/Skeleton";
 import { useAuth } from "@/lib/auth";
@@ -77,7 +80,7 @@ function AdminPage() {
           ))}
         </div>
         <div key={tab} className="animate-[fade-in_0.2s_ease-out]">
-          {tab === "overview" && <OverviewTab />}
+          {tab === "overview" && <TeamMonthGrid />}
           {tab === "grid" && <GridTab />}
           {tab === "bulk" && <BulkTab adminEmail={agent.email} />}
           {tab === "edit" && <EditTab adminEmail={agent.email} />}
@@ -85,161 +88,6 @@ function AdminPage() {
           {tab === "agents" && <AgentsTab adminEmail={agent.email} />}
           {tab === "log" && <LogTab />}
         </div>
-    </div>
-  );
-}
-
-/* ============ Overview (read-only full table) ============ */
-const OV_SHORT: Record<string, string> = {
-  "PUBLIC HOLIDAY": "PH",
-  "BIRTHDAY OFF": "BDAY",
-  "EID OFF": "EID",
-};
-function ovCode(code: string) {
-  const up = code.trim().toUpperCase();
-  if (OV_SHORT[up]) return OV_SHORT[up];
-  return code.length > 4 ? code.slice(0, 4) : code;
-}
-
-function OverviewTab() {
-  const [cursor, setCursor] = useState(() => new Date());
-  const [loading, setLoading] = useState(true);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [rows, setRows] = useState<Schedule[]>([]);
-  const [collapsed, setCollapsed] = useState(false);
-
-  const monthStart = startOfMonth(cursor);
-  const monthEnd = endOfMonth(cursor);
-  const days = useMemo(
-    () => eachDayOfInterval({ start: monthStart, end: monthEnd }),
-    [monthStart, monthEnd],
-  );
-
-  useEffect(() => {
-    let cancel = false;
-    async function load() {
-      setLoading(true);
-      const from = format(monthStart, "yyyy-MM-dd");
-      const to = format(monthEnd, "yyyy-MM-dd");
-      const [a, s] = await Promise.all([
-        supabase.from("agents").select("*").eq("active", true).order("name"),
-        supabase.from("schedules").select("*").gte("date", from).lte("date", to),
-      ]);
-      if (cancel) return;
-      setAgents((a.data as Agent[] | null) ?? []);
-      setRows((s.data as Schedule[] | null) ?? []);
-      setLoading(false);
-    }
-    load();
-    return () => { cancel = true; };
-  }, [cursor]);
-
-  const lookup = useMemo(() => {
-    const m = new Map<string, Schedule>();
-    for (const r of rows) m.set(`${r.agent_id}|${r.date}`, r);
-    return m;
-  }, [rows]);
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={() => setCursor((c) => subMonths(c, 1))} className="w-9 h-9 rounded-full glass grid place-items-center">
-          <ChevronLeft size={16} />
-        </button>
-        <div className="font-bold text-lg">{format(cursor, "MMMM yyyy")}</div>
-        <button onClick={() => setCursor((c) => addMonths(c, 1))} className="w-9 h-9 rounded-full glass grid place-items-center">
-          <ChevronRight size={16} />
-        </button>
-        <span className="text-xs text-slate-500 ml-1">{agents.length} agents · read-only</span>
-      </div>
-
-      <GlassCard className="p-0 overflow-hidden">
-        {loading ? (
-          <div className="p-4 flex flex-col gap-1.5">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-7" />
-            ))}
-          </div>
-        ) : (
-          <div
-            className="overflow-x-auto show-scroll pb-1"
-            onScroll={(e) => setCollapsed(e.currentTarget.scrollLeft > 24)}
-          >
-            <table className="text-xs border-collapse min-w-full">
-              <thead>
-                <tr>
-                  <th
-                    className="sticky left-0 z-10 bg-white/90 backdrop-blur-md text-left px-3 py-2 font-semibold text-slate-700 border-b border-white/40 transition-all duration-300"
-                    style={{ minWidth: collapsed ? 56 : 180, width: collapsed ? 56 : 180 }}
-                  >
-                    <span
-                      className="inline-block overflow-hidden whitespace-nowrap align-middle transition-all duration-300"
-                      style={{ maxWidth: collapsed ? 0 : 120, opacity: collapsed ? 0 : 1 }}
-                    >
-                      Agent
-                    </span>
-                  </th>
-                  {days.map((d) => {
-                    const today = isSameDay(d, new Date());
-                    return (
-                      <th
-                        key={d.toISOString()}
-                        className="px-1.5 py-2 font-semibold text-center min-w-[46px] border-b border-white/40"
-                        style={today ? { background: "rgba(82,183,136,0.12)" } : {}}
-                      >
-                        <div className="text-[9px] uppercase text-slate-500">{format(d, "EEE")}</div>
-                        <div className="text-sm" style={{ color: today ? "#2d7a56" : "#1e293b" }}>{format(d, "d")}</div>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {agents.map((a) => (
-                  <tr key={a.id} className="hover:bg-white/30">
-                    <td
-                      className="sticky left-0 z-10 bg-white/90 backdrop-blur-md px-3 py-1.5 border-b border-white/30 transition-all duration-300"
-                      style={{ minWidth: collapsed ? 56 : 180, width: collapsed ? 56 : 180 }}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Avatar name={a.name} size="sm" />
-                        <span
-                          className="font-medium whitespace-nowrap overflow-hidden transition-all duration-300"
-                          style={{ maxWidth: collapsed ? 0 : 140, opacity: collapsed ? 0 : 1 }}
-                        >
-                          {a.name}
-                        </span>
-                        {!collapsed && a.is_lead && <LeadBadge variant="icon" />}
-                      </div>
-                    </td>
-                    {days.map((d) => {
-                      const dk = format(d, "yyyy-MM-dd");
-                      const r = lookup.get(`${a.id}|${dk}`);
-                      const cat = shiftCategory(r?.shift_code);
-                      const s = categoryStyle(cat);
-                      const cc = cat === "graveyard" ? "#4338ca" : cat === "off" ? "#64748b" : s.text;
-                      return (
-                        <td key={dk} className="p-0.5 border-b border-white/30 text-center">
-                          {r ? (
-                            <div
-                              className="rounded-md px-1 py-1 text-[10px] font-bold uppercase leading-none"
-                              style={{ background: s.bg, color: cc }}
-                            >
-                              {ovCode(r.shift_code)}
-                            </div>
-                          ) : (
-                            <div className="text-[10px] text-slate-300">·</div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </GlassCard>
     </div>
   );
 }
@@ -428,7 +276,7 @@ function GridTab() {
                       style={{ minWidth: collapsed ? 56 : 180, width: collapsed ? 56 : 180 }}
                     >
                       <div className="flex items-center gap-2">
-                        <Avatar name={a.name} size="sm" />
+                        <Avatar name={a.name} url={a.avatar_url} size="sm" />
                         <span
                           className="font-medium whitespace-nowrap overflow-hidden transition-all duration-300"
                           style={{ maxWidth: collapsed ? 0 : 140, opacity: collapsed ? 0 : 1 }}
@@ -780,7 +628,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
                       style={{ minWidth: collapsed ? 56 : 180, width: collapsed ? 56 : 180 }}
                     >
                       <div className="flex items-center gap-2">
-                        <Avatar name={a.name} size="sm" />
+                        <Avatar name={a.name} url={a.avatar_url} size="sm" />
                         <span
                           className="font-medium whitespace-nowrap overflow-hidden transition-all duration-300"
                           style={{ maxWidth: collapsed ? 0 : 140, opacity: collapsed ? 0 : 1 }}
@@ -970,7 +818,7 @@ function EditTab({ adminEmail }: { adminEmail: string }) {
                 >
                   {sel && <Check size={12} />}
                 </button>
-                <Avatar name={a.name} size="sm" />
+                <Avatar name={a.name} url={a.avatar_url} size="sm" />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{a.name}</div>
                   <div className="text-[11px] text-slate-500 truncate">{a.email}</div>
@@ -1363,10 +1211,16 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
 function AgentsTab({ adminEmail }: { adminEmail: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
+  // form / editor
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Agent | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"agent" | "admin">("agent");
-  const [showSheet, setShowSheet] = useState(false);
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancel = false;
@@ -1379,148 +1233,150 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
         setAgents((data as Agent[] | null) ?? []);
         setLoading(false);
       });
-    return () => {
-      cancel = true;
-    };
+    return () => { cancel = true; };
   }, []);
 
-  async function addAgent() {
-    if (!name || !email) return toast.error("Name and email required");
-    const { data, error } = await supabase
-      .from("agents")
-      .insert({ name, email: email.toLowerCase(), role, active: true })
-      .select()
-      .single();
+  function openAdd() {
+    setEditing(null);
+    setName(""); setEmail(""); setRole("agent");
+    setAvatar(null); setFile(null);
+    setOpen(true);
+  }
+  function openEdit(a: Agent) {
+    setEditing(a);
+    setName(a.name); setEmail(a.email ?? ""); setRole(a.role);
+    setAvatar(a.avatar_url); setFile(null);
+    setOpen(true);
+  }
+
+  function pickFile(f: File | null) {
+    setFile(f);
+    if (f) setAvatar(URL.createObjectURL(f)); // local preview
+  }
+
+  async function uploadAvatar(agentId: string, f: File): Promise<string | null> {
+    const ext = (f.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${agentId}.${ext}`;
+    const { error } = await supabase.storage
+      .from("avatars")
+      .upload(path, f, { upsert: true, contentType: f.type });
+    if (error) { toast.error(`Image: ${error.message}`); return null; }
+    const { data } = supabase.storage.from("avatars").getPublicUrl(path);
+    return `${data.publicUrl}?t=${Date.now()}`; // cache-bust
+  }
+
+  async function save() {
+    if (!name.trim()) return toast.error("Name is required");
+    setSaving(true);
+    try {
+      if (editing) {
+        const { error } = await supabase
+          .from("agents")
+          .update({ name: name.trim(), email: email.trim().toLowerCase() || null, role })
+          .eq("id", editing.id);
+        if (error) { toast.error(error.message); return; }
+        let url = editing.avatar_url;
+        if (file) {
+          const up = await uploadAvatar(editing.id, file);
+          if (up) {
+            url = up;
+            await supabase.from("agents").update({ avatar_url: up }).eq("id", editing.id);
+          }
+        }
+        setAgents((arr) =>
+          arr.map((x) => (x.id === editing.id ? { ...x, name: name.trim(), email: email.trim().toLowerCase(), role, avatar_url: url } : x))
+            .sort((p, q) => p.name.localeCompare(q.name)),
+        );
+        toast.success("Agent updated");
+        await supabase.from("audit_log").insert({ user_email: adminEmail, action: "agent_updated", details: { id: editing.id } });
+      } else {
+        const { data, error } = await supabase
+          .from("agents")
+          .insert({ name: name.trim(), email: email.trim().toLowerCase() || null, role, active: true })
+          .select()
+          .single();
+        if (error) { toast.error(error.message); return; }
+        let created = data as Agent;
+        if (file) {
+          const up = await uploadAvatar(created.id, file);
+          if (up) {
+            await supabase.from("agents").update({ avatar_url: up }).eq("id", created.id);
+            created = { ...created, avatar_url: up };
+          }
+        }
+        setAgents((arr) => [...arr, created].sort((p, q) => p.name.localeCompare(q.name)));
+        toast.success("Agent added");
+        await supabase.from("audit_log").insert({ user_email: adminEmail, action: "agent_added", details: { name: created.name } });
+      }
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteAgent(a: Agent) {
+    if (!window.confirm(`Delete ${a.name}? This also removes all of their schedule entries. This cannot be undone.`)) return;
+    const { error } = await supabase.from("agents").delete().eq("id", a.id);
     if (error) return toast.error(error.message);
-    setAgents((a) => [...a, data as Agent].sort((x, y) => x.name.localeCompare(y.name)));
-    setName("");
-    setEmail("");
-    setRole("agent");
-    setShowSheet(false);
-    toast.success("Agent added");
-    await supabase.from("audit_log").insert({
-      user_email: adminEmail,
-      action: "agent_added",
-      details: { name, email },
-    });
+    setAgents((arr) => arr.filter((x) => x.id !== a.id));
+    toast.success(`${a.name} deleted`);
+    await supabase.from("audit_log").insert({ user_email: adminEmail, action: "agent_deleted", details: { id: a.id, name: a.name } });
   }
 
   async function toggleActive(a: Agent) {
-    const { error } = await supabase
-      .from("agents")
-      .update({ active: !a.active })
-      .eq("id", a.id);
+    const { error } = await supabase.from("agents").update({ active: !a.active }).eq("id", a.id);
     if (error) return toast.error(error.message);
     setAgents((arr) => arr.map((x) => (x.id === a.id ? { ...x, active: !a.active } : x)));
-    await supabase.from("audit_log").insert({
-      user_email: adminEmail,
-      action: "agent_active_toggled",
-      details: { id: a.id, active: !a.active },
-    });
+    await supabase.from("audit_log").insert({ user_email: adminEmail, action: "agent_active_toggled", details: { id: a.id, active: !a.active } });
   }
 
   async function toggleLead(a: Agent) {
-    const { error } = await supabase
-      .from("agents")
-      .update({ is_lead: !a.is_lead })
-      .eq("id", a.id);
+    const { error } = await supabase.from("agents").update({ is_lead: !a.is_lead }).eq("id", a.id);
     if (error) return toast.error(error.message);
     setAgents((arr) => arr.map((x) => (x.id === a.id ? { ...x, is_lead: !a.is_lead } : x)));
-    await supabase.from("audit_log").insert({
-      user_email: adminEmail,
-      action: "agent_lead_toggled",
-      details: { id: a.id, is_lead: !a.is_lead },
-    });
+    await supabase.from("audit_log").insert({ user_email: adminEmail, action: "agent_lead_toggled", details: { id: a.id, is_lead: !a.is_lead } });
   }
 
-  const AddForm = (
-    <div className="flex flex-col gap-3">
-      <div>
-        <div className="label-caps text-slate-500 mb-1">Name</div>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="w-full glass rounded-xl px-3 py-2.5 text-sm outline-none"
-          placeholder="Full name"
-        />
-      </div>
-      <div>
-        <div className="label-caps text-slate-500 mb-1">Email</div>
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full glass rounded-xl px-3 py-2.5 text-sm outline-none"
-          placeholder="you@calo.app"
-        />
-      </div>
-      <div>
-        <div className="label-caps text-slate-500 mb-1">Role</div>
-        <div className="flex gap-2">
-          {(["agent", "admin"] as const).map((r) => (
-            <button
-              key={r}
-              onClick={() => setRole(r)}
-              className={`flex-1 rounded-xl py-2 text-xs font-semibold uppercase tracking-wide transition-all ${
-                role === r ? "bg-[#1e5a3d] text-white" : "glass text-slate-600"
-              }`}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
-      </div>
-      <button
-        onClick={addAgent}
-        className="rounded-xl bg-[#52B788] text-white py-2.5 text-sm font-semibold active:scale-[0.97]"
-      >
-        Add agent
-      </button>
-    </div>
-  );
-
   return (
-    <div className="grid md:grid-cols-[280px_1fr] gap-4">
-      <GlassCard className="p-5 hidden md:block h-fit sticky top-24">
-        <div className="font-bold mb-3">Add agent</div>
-        {AddForm}
-      </GlassCard>
-
-      <div className="flex flex-col gap-2">
-        <div className="text-xs text-slate-500 px-1">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between px-1">
+        <div className="text-xs text-slate-500">
           {agents.length} total · {agents.filter((a) => a.active).length} active
         </div>
+        <button
+          onClick={openAdd}
+          className="rounded-xl bg-[#1e5a3d] text-white px-3.5 py-2 text-xs font-bold flex items-center gap-1.5 active:scale-95"
+        >
+          <Plus size={15} /> Add agent
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-2">
         {loading ? (
-          <>
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-14" />
-            ))}
-          </>
+          Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-14" />)
         ) : (
           agents.map((a) => (
-            <GlassCard key={a.id} className="p-3 flex items-center gap-3">
-              <Avatar name={a.name} size="sm" />
+            <GlassCard key={a.id} className={`p-3 flex items-center gap-3 ${a.active ? "" : "opacity-60"}`}>
+              <Avatar name={a.name} url={a.avatar_url} size="sm" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span className="text-sm font-medium truncate">{a.name}</span>
                   {a.is_lead && <LeadBadge />}
                 </div>
-                <div className="text-[11px] text-slate-500 truncate">{a.email}</div>
+                <div className="text-[11px] text-slate-500 truncate">{a.email || "no email"}</div>
               </div>
+
               <button
                 onClick={() => toggleLead(a)}
                 title={a.is_lead ? "Remove shift lead" : "Make shift lead"}
-                aria-pressed={a.is_lead}
                 className="w-8 h-8 rounded-full grid place-items-center transition-colors shrink-0 hover:bg-amber-50"
                 style={a.is_lead ? { background: "#fde68a", color: "#92400e" } : { color: "#cbd5e1" }}
               >
                 <Crown size={15} strokeWidth={2.4} fill={a.is_lead ? "currentColor" : "none"} />
               </button>
               <span
-                className={`text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-0.5 ${
-                  a.role === "admin"
-                    ? "bg-[#1e1e2e] text-[#a5b4fc]"
-                    : "bg-slate-100 text-slate-600"
+                className={`hidden sm:inline text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-0.5 ${
+                  a.role === "admin" ? "bg-[#e0e7ff] text-[#4338ca]" : "bg-slate-100 text-slate-600"
                 }`}
               >
                 {a.role}
@@ -1529,39 +1385,86 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
                 role="switch"
                 aria-checked={a.active}
                 onClick={() => toggleActive(a)}
-                className={`relative w-11 h-6 rounded-full transition-colors ${
-                  a.active ? "bg-[#52B788]" : "bg-slate-300"
-                }`}
+                title={a.active ? "Deactivate" : "Activate"}
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${a.active ? "bg-[#52B788]" : "bg-slate-300"}`}
               >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
-                    a.active ? "translate-x-5" : ""
-                  }`}
-                />
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${a.active ? "translate-x-5" : ""}`} />
+              </button>
+              <button onClick={() => openEdit(a)} title="Edit" className="w-8 h-8 rounded-full grid place-items-center text-slate-400 hover:text-slate-700 hover:bg-black/5 shrink-0">
+                <Pencil size={15} />
+              </button>
+              <button onClick={() => deleteAgent(a)} title="Delete" className="w-8 h-8 rounded-full grid place-items-center text-slate-400 hover:text-red-600 hover:bg-red-50 shrink-0">
+                <Trash2 size={15} />
               </button>
             </GlassCard>
           ))
         )}
       </div>
 
-      <button
-        onClick={() => setShowSheet(true)}
-        className="md:hidden fixed bottom-24 right-5 z-40 w-14 h-14 rounded-full bg-[#52B788] text-white grid place-items-center shadow-xl shadow-[#52B788]/40 active:scale-95"
-      >
-        <Plus size={24} />
-      </button>
-
-      {showSheet && (
+      {/* Add / Edit sheet */}
+      {open && (
         <div
-          className="md:hidden fixed inset-0 z-50 bg-black/30 backdrop-blur-sm flex items-end animate-[fade-in_0.2s_ease-out]"
-          onClick={() => setShowSheet(false)}
+          className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6 animate-[fade-in_0.2s_ease-out]"
+          onClick={() => setOpen(false)}
         >
           <div
-            className="glass w-full rounded-t-3xl p-6 animate-[slide-up_0.25s_ease-out]"
+            className="bg-white w-full md:max-w-md rounded-t-3xl md:rounded-3xl p-6 animate-[slide-up_0.25s_ease-out]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="font-bold text-lg mb-4">Add agent</div>
-            {AddForm}
+            <div className="flex items-center justify-between mb-5">
+              <div className="font-bold text-lg">{editing ? "Edit agent" : "Add agent"}</div>
+              <button onClick={() => setOpen(false)} className="w-8 h-8 rounded-full hover:bg-black/5 grid place-items-center">
+                <X size={16} className="text-slate-500" />
+              </button>
+            </div>
+
+            {/* photo */}
+            <div className="flex flex-col items-center gap-2 mb-5">
+              <button
+                onClick={() => fileRef.current?.click()}
+                className="relative group"
+                title="Upload photo"
+              >
+                <Avatar name={name || "?"} url={avatar} size="lg" className="!w-20 !h-20 !text-2xl" />
+                <span className="absolute inset-0 rounded-full grid place-items-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity text-white">
+                  <ImagePlus size={20} />
+                </span>
+              </button>
+              <button onClick={() => fileRef.current?.click()} className="text-xs font-semibold text-[#2d7a56]">
+                {avatar ? "Change photo" : "Add photo"}
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <div>
+                <div className="label-caps text-slate-500 mb-1">Name</div>
+                <input value={name} onChange={(e) => setName(e.target.value)} className="w-full glass rounded-xl px-3 py-2.5 text-sm outline-none" placeholder="Full name" />
+              </div>
+              <div>
+                <div className="label-caps text-slate-500 mb-1">Email</div>
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full glass rounded-xl px-3 py-2.5 text-sm outline-none" placeholder="you@calo.app" />
+              </div>
+              <div>
+                <div className="label-caps text-slate-500 mb-1">Role</div>
+                <div className="flex gap-2">
+                  {(["agent", "admin"] as const).map((r) => (
+                    <button key={r} onClick={() => setRole(r)} className={`flex-1 rounded-xl py-2 text-xs font-semibold uppercase tracking-wide transition-all ${role === r ? "bg-[#1e5a3d] text-white" : "glass text-slate-600"}`}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button onClick={save} disabled={saving} className="rounded-xl bg-[#52B788] text-white py-2.5 text-sm font-semibold active:scale-[0.97] disabled:opacity-60">
+                {saving ? "Saving…" : editing ? "Save changes" : "Add agent"}
+              </button>
+            </div>
           </div>
         </div>
       )}

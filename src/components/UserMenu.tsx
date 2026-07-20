@@ -14,7 +14,7 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         className="flex items-center gap-2 rounded-full p-1 pr-3 hover:bg-white/40 transition-colors"
       >
-        <Avatar name={displayName} size="sm" />
+        <Avatar name={displayName} url={agent?.avatar_url} size="sm" />
         {!compact && (
           <span className="text-sm font-medium text-slate-800 max-w-[140px] truncate">
             {displayName}

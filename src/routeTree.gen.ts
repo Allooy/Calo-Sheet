@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TodayRouteImport } from './routes/today'
 import { Route as TeamRouteImport } from './routes/team'
+import { Route as RosterRouteImport } from './routes/roster'
 import { Route as ScheduleRouteImport } from './routes/schedule'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
@@ -18,6 +19,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const TodayRoute = TodayRouteImport.update({
   id: '/today',
   path: '/today',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RosterRoute = RosterRouteImport.update({
+  id: '/roster',
+  path: '/roster',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TeamRoute = TeamRouteImport.update({
@@ -47,6 +53,7 @@ export interface FileRoutesByFullPath {
   '/schedule': typeof ScheduleRoute
   '/team': typeof TeamRoute
   '/today': typeof TodayRoute
+  '/roster': typeof RosterRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,6 +61,7 @@ export interface FileRoutesByTo {
   '/schedule': typeof ScheduleRoute
   '/team': typeof TeamRoute
   '/today': typeof TodayRoute
+  '/roster': typeof RosterRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -62,13 +70,14 @@ export interface FileRoutesById {
   '/schedule': typeof ScheduleRoute
   '/team': typeof TeamRoute
   '/today': typeof TodayRoute
+  '/roster': typeof RosterRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/admin' | '/schedule' | '/team' | '/today'
+  fullPaths: '/' | '/admin' | '/schedule' | '/team' | '/today' | '/roster'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/admin' | '/schedule' | '/team' | '/today'
-  id: '__root__' | '/' | '/admin' | '/schedule' | '/team' | '/today'
+  to: '/' | '/admin' | '/schedule' | '/team' | '/today' | '/roster'
+  id: '__root__' | '/' | '/admin' | '/schedule' | '/team' | '/today' | '/roster'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -77,6 +86,7 @@ export interface RootRouteChildren {
   ScheduleRoute: typeof ScheduleRoute
   TeamRoute: typeof TeamRoute
   TodayRoute: typeof TodayRoute
+  RosterRoute: typeof RosterRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -93,6 +103,13 @@ declare module '@tanstack/react-router' {
       path: '/team'
       fullPath: '/team'
       preLoaderRoute: typeof TeamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/roster': {
+      id: '/roster'
+      path: '/roster'
+      fullPath: '/roster'
+      preLoaderRoute: typeof RosterRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/schedule': {
@@ -125,6 +142,7 @@ const rootRouteChildren: RootRouteChildren = {
   ScheduleRoute: ScheduleRoute,
   TeamRoute: TeamRoute,
   TodayRoute: TodayRoute,
+  RosterRoute: RosterRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

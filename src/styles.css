@@ -246,8 +246,8 @@
 }
 
 /* Visible thin horizontal scrollbar (overrides the global scrollbar-hide) for wide tables */
-.show-scroll { scrollbar-width: thin; scrollbar-color: rgba(100,116,139,0.35) transparent; }
-.show-scroll::-webkit-scrollbar { display: block; height: 9px; }
-.show-scroll::-webkit-scrollbar-track { background: transparent; }
-.show-scroll::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.32); border-radius: 999px; }
-.show-scroll::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.5); }
+.show-scroll { scrollbar-width: thin !important; scrollbar-color: rgba(100,116,139,0.4) transparent; }
+.show-scroll::-webkit-scrollbar { display: block !important; -webkit-appearance: none; height: 10px; }
+.show-scroll::-webkit-scrollbar-track { background: rgba(0,0,0,0.03); border-radius: 999px; }
+.show-scroll::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.4); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+.show-scroll::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.6); background-clip: padding-box; }

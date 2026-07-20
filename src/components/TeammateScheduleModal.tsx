@@ -104,7 +104,7 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
       >
         {/* header */}
         <div className="flex items-center gap-3 p-5 border-b border-slate-100 shrink-0">
-          <Avatar name={agent.name} size="md" />
+          <Avatar name={agent.name} url={agent.avatar_url} size="md" />
           <div className="flex-1 min-w-0">
             <div className="text-base font-bold text-slate-900 truncate">{agent.name}</div>
             <div className="text-xs text-slate-400">Schedule</div>

@@ -401,7 +401,7 @@ function SchedulePage() {
                         key={a.id}
                         className="flex items-center gap-3 p-2 rounded-xl hover:bg-black/[0.03] transition-colors"
                       >
-                        <Avatar name={a.name} size="sm" />
+                        <Avatar name={a.name} url={a.avatar_url} size="sm" />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 min-w-0">
                             <span className="text-sm font-semibold truncate text-slate-800">{a.name}</span>

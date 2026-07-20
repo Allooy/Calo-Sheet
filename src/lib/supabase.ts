@@ -21,6 +21,7 @@ export type Agent = {
   role: Role;
   active: boolean;
   is_lead: boolean;
+  avatar_url: string | null;
   created_at: string;
 };
 

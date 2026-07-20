@@ -292,7 +292,7 @@ function Row({
       onClick={onClick}
       className={`p-3 flex items-center gap-3 cursor-pointer active:scale-[0.99] ${dimmed ? "opacity-60" : ""}`}
     >
-      <Avatar name={agent.name} size="sm" />
+      <Avatar name={agent.name} url={agent.avatar_url} size="sm" />
       <div className="flex-1 min-w-0 flex items-center gap-1.5">
         <span className="text-sm font-medium truncate">{agent.name}</span>
         {agent.is_lead && <LeadBadge />}
