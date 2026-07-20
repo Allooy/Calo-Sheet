@@ -26,6 +26,7 @@ import {
   codeStyle,
   formatTimeRange,
   shiftCategory,
+  shortCode,
   DEFAULT_TIMES,
   type ShiftCategory,
 } from "@/lib/shifts";
@@ -33,18 +34,6 @@ import {
 export const Route = createFileRoute("/schedule")({
   component: SchedulePage,
 });
-
-// Long shift codes don't fit a calendar cell — shorten them.
-const SHORT_CODE: Record<string, string> = {
-  "PUBLIC HOLIDAY": "PH",
-  "BIRTHDAY OFF": "BDAY",
-  "EID OFF": "EID",
-};
-function cellCode(code: string) {
-  const up = code.trim().toUpperCase();
-  if (SHORT_CODE[up]) return SHORT_CODE[up];
-  return code.length > 4 ? code.slice(0, 4) : code;
-}
 
 // Shift time window in minutes-from-midnight; overnight shifts extend past 1440.
 function toMin(t?: string | null) {
@@ -300,7 +289,7 @@ function SchedulePage() {
                           className="text-[12px] font-extrabold uppercase tracking-tight leading-tight"
                           style={{ color: today ? "#fff" : s.text }}
                         >
-                          {cellCode(row.shift_code)}
+                          {shortCode(row.shift_code)}
                         </div>
                       </div>
                     )}

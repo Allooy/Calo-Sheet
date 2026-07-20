@@ -36,6 +36,21 @@ export function codeStyle(code: string | null | undefined) {
   return categoryStyle(shiftCategory(code));
 }
 
+// Short display alias for long codes (used inside tight table cells so
+// "BIRTHDAY OFF" doesn't wrap and blow out the cell height). Case-insensitive.
+const SHORT_CODE_MAP: Record<string, string> = {
+  "BIRTHDAY OFF": "BDAY",
+  "PUBLIC HOLIDAY": "PH",
+  "EID OFF": "EID",
+};
+export function shortCode(code: string | null | undefined): string {
+  const raw = (code ?? "").trim();
+  if (!raw) return "";
+  const up = raw.toUpperCase();
+  if (SHORT_CODE_MAP[up]) return SHORT_CODE_MAP[up];
+  return raw.length > 4 ? raw.slice(0, 4).toUpperCase() : raw;
+}
+
 export const ALL_SHIFT_CODES = [
   "S1", "S2", "S3", "S4", "S5", "S5.5", "S6",
   "OFF", "AL", "SL", "DL", "EID OFF", "Birthday Off", "Public holiday", "Training", "Other",

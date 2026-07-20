@@ -42,7 +42,8 @@ import {
   type ShiftRequest,
   type RequestStatus,
 } from "@/lib/supabase";
-import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory } from "@/lib/shifts";
+import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
+import { useDragScroll } from "@/lib/useDragScroll";
 
 const TABS = [
   { key: "overview", label: "Overview" },
@@ -108,6 +109,7 @@ function GridTab() {
   const [collapsed, setCollapsed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollX = (dx: number) => scrollRef.current?.scrollBy({ left: dx, behavior: "smooth" });
+  useDragScroll(scrollRef);
 
   const monthStart = startOfMonth(cursor);
   const monthEnd = endOfMonth(cursor);
@@ -353,7 +355,7 @@ function GridTab() {
                             <option value="—">—</option>
                             {ALL_SHIFT_CODES.map((c) => (
                               <option key={c} value={c}>
-                                {c}
+                                {shortCode(c)}
                               </option>
                             ))}
                           </select>
@@ -386,6 +388,9 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
   // staged edits layered over loaded rows: key `agentId|date` -> code | null(clear)
   const [edits, setEdits] = useState<Map<string, string | null>>(new Map());
   const [undoStack, setUndoStack] = useState<Array<Array<{ key: string; prev: string | null | undefined }>>>([]);
+
+  const bulkScrollRef = useRef<HTMLDivElement>(null);
+  useDragScroll(bulkScrollRef);
 
   const monthStart = startOfMonth(cursor);
   const monthEnd = endOfMonth(cursor);
@@ -462,6 +467,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
 
   function onCellDown(agentId: string, date: string, e: React.PointerEvent) {
     if (e.pointerType === "mouse") {
+      if (e.button !== 0) return; // right-drag is reserved for pan-scroll, don't paint
       e.preventDefault();
       paintingRef.current = true;
       startStroke();
@@ -643,6 +649,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
           </div>
         ) : (
           <div
+            ref={bulkScrollRef}
             className="overflow-auto show-scroll select-none pb-28 md:pb-20 max-h-[70vh]"
             onScroll={(e) => setCollapsed(e.currentTarget.scrollLeft > 24)}
             onPointerMove={onContainerMove}
@@ -743,7 +750,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
                               touchAction: "pan-x pan-y",
                             }}
                           >
-                            {eff ?? "·"}
+                            {eff ? shortCode(eff) : "·"}
                           </div>
                         </td>
                       );

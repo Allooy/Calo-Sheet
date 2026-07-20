@@ -14,18 +14,8 @@ import { Avatar } from "./Avatar";
 import { Skeleton } from "./Skeleton";
 import { LeadBadge } from "./LeadBadge";
 import { supabase, fetchSchedulesInRange, type Agent, type Schedule } from "@/lib/supabase";
-import { codeStyle } from "@/lib/shifts";
-
-const OV_SHORT: Record<string, string> = {
-  "PUBLIC HOLIDAY": "PH",
-  "BIRTHDAY OFF": "BDAY",
-  "EID OFF": "EID",
-};
-function ovCode(code: string) {
-  const up = code.trim().toUpperCase();
-  if (OV_SHORT[up]) return OV_SHORT[up];
-  return code.length > 4 ? code.slice(0, 4) : code;
-}
+import { codeStyle, shortCode } from "@/lib/shifts";
+import { useDragScroll } from "@/lib/useDragScroll";
 
 /** Read-only full-team month grid (agents × dates). Used by Admin Overview and
  * the top-level Roster tab. No editing. */
@@ -70,6 +60,7 @@ export function TeamMonthGrid() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollX = (dx: number) => scrollRef.current?.scrollBy({ left: dx, behavior: "smooth" });
+  useDragScroll(scrollRef);
 
   return (
     <div className="flex flex-col gap-4">
@@ -196,7 +187,7 @@ export function TeamMonthGrid() {
                               className="rounded-md px-1 py-1 text-[10px] font-bold uppercase leading-none"
                               style={{ background: s.bg, color: cc }}
                             >
-                              {ovCode(r.shift_code)}
+                              {shortCode(r.shift_code)}
                             </div>
                           ) : (
                             <div className="text-[10px] text-slate-300">·</div>

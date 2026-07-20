@@ -15,18 +15,7 @@ import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Avatar } from "./Avatar";
 import { Skeleton } from "./Skeleton";
 import { supabase, type Agent, type Schedule } from "@/lib/supabase";
-import { categoryStyle, codeStyle, shiftCategory, type ShiftCategory } from "@/lib/shifts";
-
-const SHORT_CODE: Record<string, string> = {
-  "PUBLIC HOLIDAY": "PH",
-  "BIRTHDAY OFF": "BDAY",
-  "EID OFF": "EID",
-};
-function cellCode(code: string) {
-  const up = code.trim().toUpperCase();
-  if (SHORT_CODE[up]) return SHORT_CODE[up];
-  return code.length > 4 ? code.slice(0, 4) : code;
-}
+import { categoryStyle, codeStyle, shiftCategory, shortCode, type ShiftCategory } from "@/lib/shifts";
 
 export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const [cursor, setCursor] = useState(() => new Date());
@@ -191,7 +180,7 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
                           className="text-[12px] font-extrabold tracking-tight leading-none text-center"
                           style={{ color: today ? "#fff" : cc }}
                         >
-                          {cellCode(row.shift_code)}
+                          {shortCode(row.shift_code)}
                         </div>
                       </div>
                     )}
