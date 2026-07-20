@@ -5,11 +5,11 @@ import { useAuth } from "@/lib/auth";
 import { UserMenu } from "./UserMenu";
 
 const ITEMS = [
-  { to: "/today", label: "Today", icon: Clock, admin: false },
-  { to: "/schedule", label: "My Schedule", icon: Calendar, admin: false },
-  { to: "/team", label: "Team", icon: Users, admin: false },
-  { to: "/roster", label: "Roster", icon: Table2, admin: false },
-  { to: "/admin", label: "Admin", icon: Shield, admin: true },
+  { to: "/today", label: "Today", icon: Clock, admin: false, agentOnly: false },
+  { to: "/schedule", label: "My Schedule", icon: Calendar, admin: false, agentOnly: false },
+  { to: "/team", label: "Team", icon: Users, admin: false, agentOnly: false },
+  { to: "/roster", label: "Roster", icon: Table2, admin: false, agentOnly: true },
+  { to: "/admin", label: "Admin", icon: Shield, admin: true, agentOnly: false },
 ] as const;
 
 const TITLES: Record<string, string> = {
@@ -32,7 +32,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { agent } = useAuth();
   const isAdmin = agent?.role === "admin";
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const items = ITEMS.filter((i) => !i.admin || isAdmin);
+  const items = ITEMS.filter((i) => (!i.admin || isAdmin) && (!i.agentOnly || !isAdmin));
   const title = TITLES[pathname] ?? "CX Workforce";
   const [scrolled, setScrolled] = useState(false);
 

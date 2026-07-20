@@ -15,7 +15,7 @@ const FLOATERS = [
   { c: "S2",  bg: "#d6f2e4", t: "#1e5a3d", top: "5%",  left: "9%",  size: "text-sm",  anim: "float-a", dur: "15s", delay: "0s",   op: 0.9,  blur: 0,   mobile: true },
   { c: "S4",  bg: "#fff3e0", t: "#b45309", top: "8%",  left: "70%", size: "text-sm",  anim: "float-b", dur: "18s", delay: "1.2s", op: 0.85, blur: 0,   mobile: true },
   { c: "S6",  bg: "#e0e7ff", t: "#4338ca", top: "14%", left: "22%", size: "text-xs",  anim: "float-c", dur: "21s", delay: "0.7s", op: 0.5,  blur: 2,   mobile: true },
-  { c: "OFF", bg: "#f1f5f9", t: "#64748b", top: "86%", left: "11%", size: "text-sm",  anim: "float-b", dur: "17s", delay: "2s",   op: 0.85, blur: 0,   mobile: true },
+  { c: "OFF", bg: "#fee2e2", t: "#b91c1c", top: "86%", left: "11%", size: "text-sm",  anim: "float-b", dur: "17s", delay: "2s",   op: 0.85, blur: 0,   mobile: true },
   { c: "S3",  bg: "#d6f2e4", t: "#1e5a3d", top: "90%", left: "74%", size: "text-xs",  anim: "float-a", dur: "20s", delay: "0.9s", op: 0.55, blur: 1.5, mobile: true },
   { c: "S1",  bg: "#d6f2e4", t: "#1e5a3d", top: "24%", left: "87%", size: "text-xs",  anim: "float-a", dur: "23s", delay: "1.6s", op: 0.55, blur: 1.5 },
   { c: "S5",  bg: "#fff3e0", t: "#b45309", top: "92%", left: "40%", size: "text-xs",  anim: "float-c", dur: "16s", delay: "0.3s", op: 0.5,  blur: 2   },

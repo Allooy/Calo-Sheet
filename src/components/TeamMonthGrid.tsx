@@ -145,7 +145,7 @@ export function TeamMonthGrid() {
                       const r = lookup.get(`${a.id}|${dk}`);
                       const cat = shiftCategory(r?.shift_code);
                       const s = categoryStyle(cat);
-                      const cc = cat === "graveyard" ? "#4338ca" : cat === "off" ? "#64748b" : s.text;
+                      const cc = cat === "graveyard" ? "#4338ca" : cat === "off" ? "#b91c1c" : s.text;
                       return (
                         <td key={dk} className="p-0.5 border-b border-white/30 text-center">
                           {r ? (

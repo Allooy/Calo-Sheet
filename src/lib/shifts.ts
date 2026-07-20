@@ -22,7 +22,7 @@ export function categoryStyle(cat: ShiftCategory) {
     case "graveyard":
       return { bg: "#e0e7ff", text: "#4338ca", dot: "#6366f1", soft: "rgba(224,231,255,0.6)" };
     case "off":
-      return { bg: "#f1f5f9", text: "#64748b", dot: "#94a3b8", soft: "rgba(241,245,249,0.6)" };
+      return { bg: "#fee2e2", text: "#b91c1c", dot: "#ef4444", soft: "rgba(254,226,226,0.6)" };
     case "other":
       return { bg: "#fef9c3", text: "#854d0e", dot: "#eab308", soft: "rgba(254,249,195,0.6)" };
   }

@@ -153,33 +153,31 @@ function GridTab() {
   }, [days, rows]);
 
   async function changeCell(agentId: string, dateKey: string, code: string) {
-    const existing = lookup.get(`${agentId}|${dateKey}`);
     if (code === "—") {
-      if (existing) {
-        const { error } = await supabase.from("schedules").delete().eq("id", existing.id);
-        if (error) return toast.error(error.message);
-        setRows((r) => r.filter((x) => x.id !== existing.id));
-      }
-      return;
-    }
-    if (existing) {
       const { error } = await supabase
         .from("schedules")
-        .update({ shift_code: code })
-        .eq("id", existing.id);
+        .delete()
+        .eq("agent_id", agentId)
+        .eq("date", dateKey);
       if (error) return toast.error(error.message);
-      setRows((r) =>
-        r.map((x) => (x.id === existing.id ? { ...x, shift_code: code } : x)),
-      );
-    } else {
-      const { data, error } = await supabase
-        .from("schedules")
-        .insert({ agent_id: agentId, date: dateKey, shift_code: code })
-        .select()
-        .single();
-      if (error) return toast.error(error.message);
-      if (data) setRows((r) => [...r, data as Schedule]);
+      setRows((r) => r.filter((x) => !(x.agent_id === agentId && x.date === dateKey)));
+      return;
     }
+    // Delete any existing row for this agent+date, then insert — bulletproof
+    // against duplicate-key errors from rows we didn't have loaded.
+    const { error: delErr } = await supabase
+      .from("schedules")
+      .delete()
+      .eq("agent_id", agentId)
+      .eq("date", dateKey);
+    if (delErr) return toast.error(delErr.message);
+    const { data, error } = await supabase
+      .from("schedules")
+      .insert({ agent_id: agentId, date: dateKey, shift_code: code })
+      .select()
+      .single();
+    if (error) return toast.error(error.message);
+    if (data) setRows((r) => [...r.filter((x) => !(x.agent_id === agentId && x.date === dateKey)), data as Schedule]);
     toast.success("Saved");
   }
 
@@ -487,25 +485,24 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
   async function save() {
     if (!changes.length) return;
     setSaving(true);
-    const upserts = changes
+    const sets = changes
       .filter((c) => c.val !== null)
       .map((c) => {
         const [agent_id, date] = c.key.split("|");
         return { agent_id, date, shift_code: c.val as string };
       });
-    const deleteIds = changes
-      .filter((c) => c.val === null)
+    // Rows to clear = explicit clears + everything we're about to (re)set, so the
+    // insert below can never hit a duplicate-key conflict.
+    const clearIds = changes
       .map((c) => lookup.get(c.key)?.id)
       .filter((x): x is string => !!x);
 
-    if (upserts.length) {
-      const { error } = await supabase
-        .from("schedules")
-        .upsert(upserts, { onConflict: "agent_id,date" });
+    if (clearIds.length) {
+      const { error } = await supabase.from("schedules").delete().in("id", clearIds);
       if (error) { setSaving(false); return toast.error(error.message); }
     }
-    if (deleteIds.length) {
-      const { error } = await supabase.from("schedules").delete().in("id", deleteIds);
+    if (sets.length) {
+      const { error } = await supabase.from("schedules").insert(sets);
       if (error) { setSaving(false); return toast.error(error.message); }
     }
     await supabase.from("audit_log").insert({
@@ -741,23 +738,20 @@ function EditTab({ adminEmail }: { adminEmail: string }) {
   }, [rows]);
 
   async function upsert(agentId: string, code: string) {
-    const existing = byAgent.get(agentId);
-    if (existing) {
-      const { error } = await supabase
-        .from("schedules")
-        .update({ shift_code: code })
-        .eq("id", existing.id);
-      if (error) return toast.error(error.message);
-      setRows((r) => r.map((x) => (x.id === existing.id ? { ...x, shift_code: code } : x)));
-    } else {
-      const { data, error } = await supabase
-        .from("schedules")
-        .insert({ agent_id: agentId, date, shift_code: code })
-        .select()
-        .single();
-      if (error) return toast.error(error.message);
-      if (data) setRows((r) => [...r, data as Schedule]);
-    }
+    // delete-then-insert so a stale/unloaded row can't cause a duplicate-key error
+    const { error: delErr } = await supabase
+      .from("schedules")
+      .delete()
+      .eq("agent_id", agentId)
+      .eq("date", date);
+    if (delErr) return toast.error(delErr.message);
+    const { data, error } = await supabase
+      .from("schedules")
+      .insert({ agent_id: agentId, date, shift_code: code })
+      .select()
+      .single();
+    if (error) return toast.error(error.message);
+    if (data) setRows((r) => [...r.filter((x) => x.agent_id !== agentId), data as Schedule]);
     await supabase.from("audit_log").insert({
       user_email: adminEmail,
       action: "shift_set",
@@ -1027,37 +1021,60 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
     }
     if (!parsed) return;
     const valid = parsed.filter((r) => r.match && r.date && r.shift_code);
+    const skipped = parsed.length - valid.length;
+    if (!valid.length) {
+      toast.error("No matched rows to import");
+      return;
+    }
     setImporting(true);
-    const chunk = 100;
+
+    // Dedupe payload by agent+date (last wins) so a batch never conflicts with itself.
+    const byKey = new Map<string, { agent_id: string; date: string; shift_code: string }>();
+    for (const r of valid) {
+      byKey.set(`${r.match!.id}|${r.date}`, { agent_id: r.match!.id, date: r.date, shift_code: r.shift_code });
+    }
+    const payload = [...byKey.values()];
+    const agentIds = [...new Set(payload.map((p) => p.agent_id))];
+    const dates = payload.map((p) => p.date).sort();
+    const minD = dates[0];
+    const maxD = dates[dates.length - 1];
+
+    // REPLACE the month: clear existing shifts for these agents in the imported
+    // range, then insert fresh. This avoids any duplicate-key conflict and makes
+    // the sheet the source of truth.
+    const { error: delErr } = await supabase
+      .from("schedules")
+      .delete()
+      .in("agent_id", agentIds)
+      .gte("date", minD)
+      .lte("date", maxD);
+    if (delErr) {
+      setImporting(false);
+      return toast.error(`Clearing old shifts failed: ${delErr.message}`);
+    }
+
     let ok = 0;
     let lastError = "";
-    for (let i = 0; i < valid.length; i += chunk) {
-      const slice = valid.slice(i, i + chunk).map((r) => ({
-        agent_id: r.match!.id,
-        date: r.date,
-        shift_code: r.shift_code,
-      }));
-      const { error } = await supabase
-        .from("schedules")
-        .upsert(slice, { onConflict: "agent_id,date" });
-      // Keep going past a bad chunk so one failure doesn't block everyone else.
+    const chunk = 200;
+    for (let i = 0; i < payload.length; i += chunk) {
+      const slice = payload.slice(i, i + chunk);
+      const { error } = await supabase.from("schedules").insert(slice);
       if (error) lastError = error.message;
       else ok += slice.length;
-      setProgress(Math.round(((i + slice.length) / valid.length) * 100));
+      setProgress(Math.round(((i + slice.length) / payload.length) * 100));
     }
     setImporting(false);
     setProgress(0);
-    const skipped = parsed.length - valid.length;
     if (lastError) {
-      toast.error(`Imported ${ok}/${valid.length}. Some failed: ${lastError}`);
+      toast.error(`Imported ${ok}/${payload.length}. Some failed: ${lastError}`);
     } else {
-      toast.success(`Imported ${ok} rows${skipped ? ` · ${skipped} unmatched skipped` : ""}`);
+      toast.success(`Imported ${ok} shifts${skipped ? ` · ${skipped} unmatched skipped` : ""}`);
     }
     setParsed(null);
     await supabase.from("audit_log").insert({
       user_email: adminEmail,
       action: "schedules_imported",
-      details: { count: ok, unmatched: skipped },
+      details: { count: ok, unmatched: skipped, range: [minD, maxD] },
     });
   }
 

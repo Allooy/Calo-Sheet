@@ -29,7 +29,7 @@ function cellCode(code: string) {
 }
 function codeColor(cat: ShiftCategory, s: ReturnType<typeof categoryStyle>) {
   if (cat === "graveyard") return "#4338ca";
-  if (cat === "off") return "#64748b";
+  if (cat === "off") return "#b91c1c";
   return s.text;
 }
 
@@ -182,7 +182,7 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
                         : empty
                           ? "rgba(241,245,249,0.5)"
                           : cat === "off"
-                            ? "rgba(241,245,249,0.75)"
+                            ? "rgba(254,226,226,0.75)"
                             : `${s.dot}1f`,
                       boxShadow: today ? "0 8px 20px rgba(82,183,136,0.4)" : "none",
                     }}
