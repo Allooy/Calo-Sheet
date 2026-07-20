@@ -156,14 +156,13 @@ function SchedulePage() {
   const [roster, setRoster] = useState<{ agent: Agent; schedule: Schedule }[]>([]);
   const [rosterLoading, setRosterLoading] = useState(false);
 
+  // If I'm working → show colleagues whose shift overlaps mine.
+  // If I'm OFF (or the day is unset) → show everyone who IS working that day.
+  const myWindow = selectedRow ? shiftWindow(selectedRow.shift_code, shiftTypes) : null;
+
   useEffect(() => {
-    if (!agent || !selected || !selectedRow) {
+    if (!agent || !selected) {
       setRoster([]);
-      return;
-    }
-    const myWin = shiftWindow(selectedRow.shift_code, shiftTypes);
-    if (!myWin) {
-      setRoster([]); // off / unknown → no overlap roster
       return;
     }
     let cancel = false;
@@ -180,13 +179,13 @@ function SchedulePage() {
         .filter((sc) => sc.agent_id !== agent.id)
         .map((sc) => {
           const win = shiftWindow(sc.shift_code, shiftTypes);
-          if (!win || !overlaps(myWin, win)) return null;
+          if (!win) return null; // skip OFF / AL / PH etc.
+          if (myWindow && !overlaps(myWindow, win)) return null; // only overlaps when I'm working
           const ag = byId.get(sc.agent_id);
           return ag ? { agent: ag, schedule: sc } : null;
         })
         .filter(Boolean) as { agent: Agent; schedule: Schedule }[])
         .sort((x, y) => {
-          // Leads first, then earliest shift start → latest, then name.
           if (x.agent.is_lead !== y.agent.is_lead)
             return Number(y.agent.is_lead) - Number(x.agent.is_lead);
           const sx = shiftWindow(x.schedule.shift_code, shiftTypes)?.[0] ?? 0;
@@ -201,8 +200,6 @@ function SchedulePage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, selectedRow?.shift_code, agent?.id, shiftTypes]);
-
-  const myWindow = selectedRow ? shiftWindow(selectedRow.shift_code, shiftTypes) : null;
 
   return (
     <>
@@ -274,12 +271,10 @@ function SchedulePage() {
                 return (
                   <button
                     key={d.toISOString()}
-                    onClick={() => row && setSelected(d)}
+                    onClick={() => inMonth && setSelected(d)}
                     className={`relative min-h-[64px] md:min-h-[78px] rounded-xl p-1.5 text-left transition-all duration-200 active:scale-[0.97] ${
-                      !inMonth ? "opacity-40" : ""
-                    } ${empty && inMonth ? "opacity-80" : ""} ${
-                      row ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-lg hover:brightness-[0.98]" : "cursor-default"
-                    }`}
+                      !inMonth ? "opacity-40 cursor-default" : "cursor-pointer hover:-translate-y-0.5 hover:shadow-lg hover:brightness-[0.98]"
+                    } ${empty && inMonth ? "opacity-80" : ""}`}
                     style={{
                       background: today
                         ? "#52B788"
@@ -336,7 +331,7 @@ function SchedulePage() {
         {agent && <AgentRequests agentId={agent.id} />}
       </div>
 
-      {selected && selectedRow && (
+      {selected && (
         <div
           className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6 animate-[fade-in_0.2s_ease-out]"
           onClick={() => setSelected(null)}
@@ -347,7 +342,9 @@ function SchedulePage() {
           >
             <div className="flex items-start justify-between shrink-0">
               <div>
-                <div className="label-caps text-slate-500">Shift detail</div>
+                <div className="label-caps text-slate-500">
+                  {selectedRow ? "Shift detail" : "Day overview"}
+                </div>
                 <div className="text-lg font-bold mt-0.5">
                   {format(selected, "EEEE, MMMM d")}
                 </div>
@@ -361,31 +358,37 @@ function SchedulePage() {
             </div>
 
             <div className="mt-4 flex flex-col items-center gap-2 shrink-0">
-              <ShiftBadge code={selectedRow.shift_code} size="lg" />
-              {formatTimeRange(selectedRow.shift_code, shiftTypes) && (
-                <div className="text-sm text-slate-600 font-medium">
-                  {formatTimeRange(selectedRow.shift_code, shiftTypes)}
-                </div>
-              )}
-              {selectedRow.notes && (
-                <div className="text-xs text-slate-500 mt-1">{selectedRow.notes}</div>
+              {selectedRow ? (
+                <>
+                  <ShiftBadge code={selectedRow.shift_code} size="lg" />
+                  {formatTimeRange(selectedRow.shift_code, shiftTypes) && (
+                    <div className="text-sm text-slate-600 font-medium">
+                      {formatTimeRange(selectedRow.shift_code, shiftTypes)}
+                    </div>
+                  )}
+                  {selectedRow.notes && (
+                    <div className="text-xs text-slate-500 mt-1">{selectedRow.notes}</div>
+                  )}
+                </>
+              ) : (
+                <div className="text-sm text-slate-500 font-medium">Nothing scheduled for you.</div>
               )}
             </div>
 
-            {/* Overlapping colleagues — only for working shifts */}
-            {myWindow && (
-              <div className="mt-5 pt-5 border-t border-black/5 flex flex-col min-h-0">
-                <div className="flex items-center justify-between mb-3 shrink-0">
-                  <div className="flex items-center gap-2">
-                    <Users size={15} className="text-slate-400" />
-                    <span className="label-caps text-slate-500">Working with you</span>
-                  </div>
-                  {!rosterLoading && (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-[#52B788]/15 text-[#2d7a56]">
-                      {roster.length}
-                    </span>
-                  )}
+            <div className="mt-5 pt-5 border-t border-black/5 flex flex-col min-h-0">
+              <div className="flex items-center justify-between mb-3 shrink-0">
+                <div className="flex items-center gap-2">
+                  <Users size={15} className="text-slate-400" />
+                  <span className="label-caps text-slate-500">
+                    {myWindow ? "Working with you" : "On shift"}
+                  </span>
                 </div>
+                {!rosterLoading && (
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-[#52B788]/15 text-[#2d7a56]">
+                    {roster.length}
+                  </span>
+                )}
+              </div>
 
                 {rosterLoading ? (
                   <div className="flex flex-col gap-2">
@@ -395,7 +398,7 @@ function SchedulePage() {
                   </div>
                 ) : roster.length === 0 ? (
                   <div className="text-sm text-slate-400 text-center py-4">
-                    No one else overlaps your shift this day.
+                    {myWindow ? "No one else overlaps your shift this day." : "No one is scheduled to work this day."}
                   </div>
                 ) : (
                   <div className="flex flex-col gap-1.5 overflow-y-auto -mx-1 px-1">
@@ -420,7 +423,6 @@ function SchedulePage() {
                   </div>
                 )}
               </div>
-            )}
           </div>
         </div>
       )}
