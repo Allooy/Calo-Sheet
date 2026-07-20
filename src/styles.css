@@ -244,3 +244,10 @@
   animation: var(--animate-shimmer);
   border-radius: 12px;
 }
+
+/* Visible thin horizontal scrollbar (overrides the global scrollbar-hide) for wide tables */
+.show-scroll { scrollbar-width: thin; scrollbar-color: rgba(100,116,139,0.35) transparent; }
+.show-scroll::-webkit-scrollbar { display: block; height: 9px; }
+.show-scroll::-webkit-scrollbar-track { background: transparent; }
+.show-scroll::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.32); border-radius: 999px; }
+.show-scroll::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.5); }
