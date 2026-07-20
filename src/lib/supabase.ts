@@ -35,6 +35,28 @@ export type Schedule = {
   updated_at: string;
 };
 
+// Fetch ALL schedules in a date range, paging past Supabase's 1000-row cap so a
+// full-month, all-agents grid never silently truncates (which made some agents
+// look empty).
+export async function fetchSchedulesInRange(from: string, to: string): Promise<Schedule[]> {
+  const all: Schedule[] = [];
+  const size = 1000;
+  for (let page = 0; page < 100; page++) {
+    const { data, error } = await supabase
+      .from("schedules")
+      .select("*")
+      .gte("date", from)
+      .lte("date", to)
+      .order("date", { ascending: true })
+      .range(page * size, page * size + size - 1);
+    if (error) break;
+    const rows = (data as Schedule[] | null) ?? [];
+    all.push(...rows);
+    if (rows.length < size) break;
+  }
+  return all;
+}
+
 export type ShiftType = {
   code: string;
   label: string;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addMonths,
   eachDayOfInterval,
@@ -13,7 +13,7 @@ import { GlassCard } from "./GlassCard";
 import { Avatar } from "./Avatar";
 import { Skeleton } from "./Skeleton";
 import { LeadBadge } from "./LeadBadge";
-import { supabase, type Agent, type Schedule } from "@/lib/supabase";
+import { supabase, fetchSchedulesInRange, type Agent, type Schedule } from "@/lib/supabase";
 import { codeStyle } from "@/lib/shifts";
 
 const OV_SHORT: Record<string, string> = {
@@ -51,11 +51,11 @@ export function TeamMonthGrid() {
       const to = format(monthEnd, "yyyy-MM-dd");
       const [a, s] = await Promise.all([
         supabase.from("agents").select("*").eq("active", true).order("name"),
-        supabase.from("schedules").select("*").gte("date", from).lte("date", to),
+        fetchSchedulesInRange(from, to),
       ]);
       if (cancel) return;
       setAgents((a.data as Agent[] | null) ?? []);
-      setRows((s.data as Schedule[] | null) ?? []);
+      setRows(s);
       setLoading(false);
     }
     load();
@@ -68,6 +68,9 @@ export function TeamMonthGrid() {
     return m;
   }, [rows]);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollX = (dx: number) => scrollRef.current?.scrollBy({ left: dx, behavior: "smooth" });
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2 flex-wrap">
@@ -79,6 +82,16 @@ export function TeamMonthGrid() {
           <ChevronRight size={16} />
         </button>
         <span className="text-xs text-slate-500 ml-1">{agents.length} agents · read-only</span>
+        {/* Scroll the table horizontally */}
+        <div className="ml-auto flex items-center gap-1">
+          <span className="text-[11px] text-slate-400 mr-1 hidden sm:inline">Scroll dates</span>
+          <button onClick={() => scrollX(-320)} className="w-8 h-8 rounded-full glass grid place-items-center active:scale-90" aria-label="Scroll left">
+            <ChevronLeft size={15} />
+          </button>
+          <button onClick={() => scrollX(320)} className="w-8 h-8 rounded-full glass grid place-items-center active:scale-90" aria-label="Scroll right">
+            <ChevronRight size={15} />
+          </button>
+        </div>
       </div>
 
       <GlassCard className="p-0 overflow-hidden">
@@ -90,6 +103,7 @@ export function TeamMonthGrid() {
           </div>
         ) : (
           <div
+            ref={scrollRef}
             className="overflow-x-auto show-scroll pb-1"
             onScroll={(e) => setCollapsed(e.currentTarget.scrollLeft > 24)}
           >

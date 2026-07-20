@@ -34,6 +34,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { useAuth } from "@/lib/auth";
 import {
   supabase,
+  fetchSchedulesInRange,
   type Agent,
   type AuditLog,
   type Schedule,
@@ -100,6 +101,8 @@ function GridTab() {
   const [rows, setRows] = useState<Schedule[]>([]);
   // Collapse the agent name column to just avatars once the table is scrolled right.
   const [collapsed, setCollapsed] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollX = (dx: number) => scrollRef.current?.scrollBy({ left: dx, behavior: "smooth" });
 
   const monthStart = startOfMonth(cursor);
   const monthEnd = endOfMonth(cursor);
@@ -116,11 +119,11 @@ function GridTab() {
       const to = format(monthEnd, "yyyy-MM-dd");
       const [a, s] = await Promise.all([
         supabase.from("agents").select("*").eq("active", true).order("name"),
-        supabase.from("schedules").select("*").gte("date", from).lte("date", to),
+        fetchSchedulesInRange(from, to),
       ]);
       if (cancel) return;
       setAgents((a.data as Agent[] | null) ?? []);
-      setRows((s.data as Schedule[] | null) ?? []);
+      setRows(s);
       setLoading(false);
     }
     load();
@@ -218,12 +221,22 @@ function GridTab() {
             <ChevronRight size={16} />
           </button>
         </div>
-        <button
-          onClick={exportCSV}
-          className="rounded-xl bg-[#1e5a3d] text-white px-3 py-2 text-xs font-semibold flex items-center gap-1.5 active:scale-95"
-        >
-          <Download size={14} /> Export CSV
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            <button onClick={() => scrollX(-320)} className="w-8 h-8 rounded-full glass grid place-items-center active:scale-90" aria-label="Scroll left">
+              <ChevronLeft size={15} />
+            </button>
+            <button onClick={() => scrollX(320)} className="w-8 h-8 rounded-full glass grid place-items-center active:scale-90" aria-label="Scroll right">
+              <ChevronRight size={15} />
+            </button>
+          </div>
+          <button
+            onClick={exportCSV}
+            className="rounded-xl bg-[#1e5a3d] text-white px-3 py-2 text-xs font-semibold flex items-center gap-1.5 active:scale-95"
+          >
+            <Download size={14} /> Export CSV
+          </button>
+        </div>
       </div>
 
       <GlassCard className="p-0 overflow-hidden">
@@ -235,6 +248,7 @@ function GridTab() {
           </div>
         ) : (
           <div
+            ref={scrollRef}
             className="overflow-x-auto show-scroll pb-1"
             onScroll={(e) => setCollapsed(e.currentTarget.scrollLeft > 24)}
           >
@@ -354,10 +368,10 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
     const to = format(endOfMonth(cursor), "yyyy-MM-dd");
     const [a, s] = await Promise.all([
       supabase.from("agents").select("*").eq("active", true).order("name"),
-      supabase.from("schedules").select("*").gte("date", from).lte("date", to),
+      fetchSchedulesInRange(from, to),
     ]);
     setAgents((a.data as Agent[] | null) ?? []);
-    setRows((s.data as Schedule[] | null) ?? []);
+    setRows(s);
     setLoading(false);
   }, [cursor]);
 
