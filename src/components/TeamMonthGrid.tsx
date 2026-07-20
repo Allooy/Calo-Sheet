@@ -104,14 +104,14 @@ export function TeamMonthGrid() {
         ) : (
           <div
             ref={scrollRef}
-            className="overflow-x-auto show-scroll pb-1"
+            className="overflow-auto show-scroll pb-1 max-h-[70vh]"
             onScroll={(e) => setCollapsed(e.currentTarget.scrollLeft > 24)}
           >
             <table className="text-xs border-collapse min-w-full">
               <thead>
                 <tr>
                   <th
-                    className="sticky left-0 z-10 bg-white/90 backdrop-blur-md text-left px-3 py-2 font-semibold text-slate-700 border-b border-white/40 transition-all duration-300"
+                    className="sticky left-0 top-0 z-30 bg-white/95 backdrop-blur-md text-left px-3 py-2 font-semibold text-slate-700 border-b border-white/40 transition-all duration-300"
                     style={{ minWidth: collapsed ? 56 : 180, width: collapsed ? 56 : 180 }}
                   >
                     <span
@@ -126,11 +126,24 @@ export function TeamMonthGrid() {
                     return (
                       <th
                         key={d.toISOString()}
-                        className="px-1.5 py-2 font-semibold text-center min-w-[46px] border-b border-white/40"
-                        style={today ? { background: "rgba(82,183,136,0.12)" } : {}}
+                        className="px-1.5 py-2 font-semibold text-center min-w-[46px] border-b border-white/40 sticky top-0 z-20 backdrop-blur-md"
+                        style={{
+                          background: today ? "rgba(82,183,136,0.22)" : "rgba(255,255,255,0.95)",
+                          boxShadow: today ? "inset 0 -3px 0 #52B788" : undefined,
+                        }}
                       >
-                        <div className="text-[9px] uppercase text-slate-500">{format(d, "EEE")}</div>
-                        <div className="text-sm" style={{ color: today ? "#2d7a56" : "#1e293b" }}>{format(d, "d")}</div>
+                        <div
+                          className="text-[9px] uppercase"
+                          style={{ color: today ? "#2d7a56" : "#64748b", fontWeight: today ? 700 : 500 }}
+                        >
+                          {format(d, "EEE")}
+                        </div>
+                        <div
+                          className="text-sm"
+                          style={{ color: today ? "#2d7a56" : "#1e293b", fontWeight: today ? 800 : 600 }}
+                        >
+                          {format(d, "d")}
+                        </div>
                       </th>
                     );
                   })}
@@ -144,7 +157,19 @@ export function TeamMonthGrid() {
                       style={{ minWidth: collapsed ? 56 : 180, width: collapsed ? 56 : 180 }}
                     >
                       <div className="flex items-center gap-2">
-                        <Avatar name={a.name} url={a.avatar_url} size="sm" />
+                        <div
+                          tabIndex={0}
+                          className="relative group/pfp outline-none shrink-0"
+                          aria-label={a.name}
+                        >
+                          <Avatar name={a.name} url={a.avatar_url} size="sm" />
+                          <span
+                            className="pointer-events-none absolute left-full ml-2 top-1/2 -translate-y-1/2 z-40 opacity-0 group-hover/pfp:opacity-100 group-focus/pfp:opacity-100 transition-opacity duration-150 bg-slate-900 text-white text-[11px] font-semibold px-2 py-1 rounded-md whitespace-nowrap shadow-lg"
+                          >
+                            {a.name}
+                            {a.is_lead ? " · Lead" : ""}
+                          </span>
+                        </div>
                         <span
                           className="font-medium whitespace-nowrap overflow-hidden transition-all duration-300"
                           style={{ maxWidth: collapsed ? 0 : 140, opacity: collapsed ? 0 : 1 }}
@@ -159,8 +184,13 @@ export function TeamMonthGrid() {
                       const r = lookup.get(`${a.id}|${dk}`);
                       const s = codeStyle(r?.shift_code);
                       const cc = s.text;
+                      const today = isSameDay(d, new Date());
                       return (
-                        <td key={dk} className="p-0.5 border-b border-white/30 text-center">
+                        <td
+                          key={dk}
+                          className="p-0.5 border-b border-white/30 text-center"
+                          style={today ? { background: "rgba(82,183,136,0.08)" } : undefined}
+                        >
                           {r ? (
                             <div
                               className="rounded-md px-1 py-1 text-[10px] font-bold uppercase leading-none"
