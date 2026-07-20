@@ -1143,14 +1143,13 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
             date: (r.date || r.Date || "").trim(),
             shift_code: (r.shift_code || r.shift || r.Shift || "").trim(),
           }));
-      const names = [...new Set(rows.map((r) => r.agent_name).filter(Boolean))];
-      const { data: agents } = await supabase
-        .from("agents")
-        .select("*")
-        .in("name", names.length ? names : ["__none__"]);
+      // Match by NORMALIZED name (trim + lowercase) against ALL agents, so a
+      // stray trailing space or different casing in the DB never blocks a match.
+      const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+      const { data: agents } = await supabase.from("agents").select("*");
       const byName = new Map<string, Agent>();
-      for (const a of (agents as Agent[] | null) ?? []) byName.set(a.name, a);
-      setParsed(rows.map((r) => ({ ...r, match: byName.get(r.agent_name) })));
+      for (const a of (agents as Agent[] | null) ?? []) byName.set(norm(a.name), a);
+      setParsed(rows.map((r) => ({ ...r, match: byName.get(norm(r.agent_name)) })));
       setParsedAgents(null);
     }
   }
@@ -1182,6 +1181,8 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
     const valid = parsed.filter((r) => r.match && r.date && r.shift_code);
     setImporting(true);
     const chunk = 100;
+    let ok = 0;
+    let lastError = "";
     for (let i = 0; i < valid.length; i += chunk) {
       const slice = valid.slice(i, i + chunk).map((r) => ({
         agent_id: r.match!.id,
@@ -1191,20 +1192,24 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
       const { error } = await supabase
         .from("schedules")
         .upsert(slice, { onConflict: "agent_id,date" });
-      if (error) {
-        setImporting(false);
-        return toast.error(error.message);
-      }
+      // Keep going past a bad chunk so one failure doesn't block everyone else.
+      if (error) lastError = error.message;
+      else ok += slice.length;
       setProgress(Math.round(((i + slice.length) / valid.length) * 100));
     }
     setImporting(false);
     setProgress(0);
-    toast.success(`Imported ${valid.length} rows`);
+    const skipped = parsed.length - valid.length;
+    if (lastError) {
+      toast.error(`Imported ${ok}/${valid.length}. Some failed: ${lastError}`);
+    } else {
+      toast.success(`Imported ${ok} rows${skipped ? ` · ${skipped} unmatched skipped` : ""}`);
+    }
     setParsed(null);
     await supabase.from("audit_log").insert({
       user_email: adminEmail,
       action: "schedules_imported",
-      details: { count: valid.length },
+      details: { count: ok, unmatched: skipped },
     });
   }
 
