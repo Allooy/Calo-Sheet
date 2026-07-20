@@ -197,7 +197,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <nav
         ref={navRef}
-        className="md:hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-40 inline-flex items-center p-1.5 rounded-full"
+        className="md:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 inline-flex items-center p-1.5 rounded-full"
         style={{
           background: "linear-gradient(160deg, rgba(255,255,255,0.94) 0%, rgba(240,249,245,0.95) 100%)",
           backdropFilter: "blur(28px) saturate(125%)",
@@ -229,21 +229,21 @@ export function AppShell({ children }: { children: ReactNode }) {
               to={to}
               aria-label={label}
               ref={(el) => { itemRefs.current[i] = el; }}
-              className={`relative z-10 flex items-center justify-center h-11 ${isSchedule ? "w-[112px]" : "w-[86px]"} rounded-full active:scale-90 transition-transform duration-200`}
+              className={`relative z-10 flex items-center justify-center h-11 ${isSchedule ? "w-[86px]" : "w-[72px]"} rounded-full active:scale-90 transition-transform duration-200`}
             >
               <Icon
-                size={20}
+                size={19}
                 strokeWidth={active ? 2.5 : 1.9}
                 fill="none"
                 className="shrink-0"
                 style={{ color: active ? "#ffffff" : "#94a3b8", transition: "color 0.3s ease" }}
               />
               <span
-                className="font-bold text-[13px] whitespace-nowrap overflow-hidden"
+                className="font-bold text-[12px] whitespace-nowrap overflow-hidden"
                 style={{
                   color: "#ffffff",
-                  maxWidth: active ? "68px" : "0px",
-                  marginLeft: active ? "6px" : "0px",
+                  maxWidth: active ? "58px" : "0px",
+                  marginLeft: active ? "5px" : "0px",
                   opacity: active ? 1 : 0,
                   transition:
                     "max-width 0.5s cubic-bezier(0.22, 1, 0.36, 1), margin-left 0.5s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.35s ease",
