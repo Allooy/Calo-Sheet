@@ -490,14 +490,23 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
         const [agent_id, date] = c.key.split("|");
         return { agent_id, date, shift_code: c.val as string };
       });
-    // Rows to clear = explicit clears + everything we're about to (re)set, so the
-    // insert below can never hit a duplicate-key conflict.
-    const clearIds = changes
-      .map((c) => lookup.get(c.key)?.id)
-      .filter((x): x is string => !!x);
 
-    if (clearIds.length) {
-      const { error } = await supabase.from("schedules").delete().in("id", clearIds);
+    // Clear EVERY changed cell by (agent_id, date) — not by loaded row id — so a
+    // row that exists in the DB but wasn't loaded still gets removed. Grouped per
+    // agent to keep the queries simple. Then insert the new values.
+    const datesByAgent = new Map<string, string[]>();
+    for (const c of changes) {
+      const [agent_id, date] = c.key.split("|");
+      const arr = datesByAgent.get(agent_id) ?? [];
+      arr.push(date);
+      datesByAgent.set(agent_id, arr);
+    }
+    for (const [agent_id, dates] of datesByAgent) {
+      const { error } = await supabase
+        .from("schedules")
+        .delete()
+        .eq("agent_id", agent_id)
+        .in("date", dates);
       if (error) { setSaving(false); return toast.error(error.message); }
     }
     if (sets.length) {
