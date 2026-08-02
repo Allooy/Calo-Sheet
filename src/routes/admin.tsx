@@ -1,11 +1,13 @@
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  addDays,
   addMonths,
   eachDayOfInterval,
   endOfMonth,
   format,
   isSameDay,
+  parseISO,
   startOfMonth,
   subMonths,
 } from "date-fns";
@@ -45,6 +47,7 @@ import {
 } from "@/lib/supabase";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
+import { generateSchedule, type GenResult } from "@/lib/generator";
 
 const TABS = [
   { key: "overview", label: "Overview" },
@@ -109,7 +112,7 @@ function AdminPage() {
           {tab === "upload" && <UploadTab adminEmail={agent.email} />}
           {tab === "agents" && <AgentsTab adminEmail={agent.email} />}
           {tab === "log" && <LogTab />}
-          {tab === "auto" && <AutomationTab />}
+          {tab === "auto" && <AutomationTab adminEmail={agent.email} />}
         </div>
     </div>
   );
@@ -1801,55 +1804,210 @@ function LogTab() {
 
 /* ============ Automation (schedule generator) ============ */
 
-// Coverage shape measured from June–Aug 2026 (3 real months, 91 days).
-// Fri/Sat are the weekend here, so OFF is deliberately heavier then.
-const WEEKDAY_TARGETS = [
-  { d: "Sun", off: 6.5, work: 26.3 },
-  { d: "Mon", off: 6.5, work: 27.3 },
-  { d: "Tue", off: 8.6, work: 24.8 },
-  { d: "Wed", off: 8.7, work: 24.5 },
-  { d: "Thu", off: 11.0, work: 22.8 },
-  { d: "Fri", off: 16.8, work: 17.5 },
-  { d: "Sat", off: 13.2, work: 21.0 },
+// Best-guess defaults, matched by name tokens so a small spelling drift in the
+// DB doesn't silently drop someone. The admin can always correct them below.
+const GY_DEFAULTS = [
+  ["hussain", "salman"], ["nawaf"], ["mohammed", "hussain"], ["ali", "eid"],
+  ["khaled"], ["fahad"], ["osama"], ["mohsen"], ["omar"],
 ];
-
-const DETECTED = [
-  { k: "2 days off in a row", v: "98%", note: "339 of 345 off-blocks — effectively absolute" },
-  { k: "5 days on in a row", v: "62%", note: "flexes 4–6; 5 is the target, not a hard rule" },
-  { k: "Weekly morning ↔ evening flip", v: "56%", note: "alternating is the default, 23% repeat" },
-  { k: "Graveyard S6 per day", v: "2–3", note: "mean 2.1, never below 2" },
-  { k: "S5.5 used", v: "never", note: "0 occurrences in 3 months" },
-  { k: "Built in whole Sun–Sat weeks", v: "4–5", note: "not calendar months — sheets start on a Sunday" },
+const FIXED_DEFAULTS: Array<[string[], string]> = [
+  [["ali", "jalal"], "S3"],
+  [["reem", "alraddia"], "S2"],
 ];
+const CFG_KEY = "cx-automation-config";
 
-function AutomationTab() {
+const nrm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+const hits = (name: string, toks: string[]) => toks.every((t) => nrm(name).includes(t));
+
+/** The Sunday closest to the 1st — reproduces how the real sheets were anchored. */
+function nearestSunday(d: Date) {
+  const dow = d.getDay();
+  const fwd = (7 - dow) % 7;
+  return dow <= fwd ? addDays(d, -dow) : addDays(d, fwd);
+}
+
+function Toggle({ on, set, label, hint }: {
+  on: boolean; set: (v: boolean) => void; label: string; hint?: string;
+}) {
+  return (
+    <button onClick={() => set(!on)} className="flex items-start gap-2.5 text-left w-full">
+      <span
+        className={`mt-0.5 w-9 h-5 rounded-full shrink-0 transition-colors relative ${
+          on ? "bg-violet-600" : "bg-slate-300"
+        }`}
+      >
+        <span
+          className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all shadow-sm"
+          style={{ left: on ? 18 : 2 }}
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-slate-700">{label}</span>
+        {hint && <span className="block text-[11px] text-slate-500 leading-snug">{hint}</span>}
+      </span>
+    </button>
+  );
+}
+
+function StatChip({ label, value, good }: { label: string; value: string; good: boolean }) {
+  return (
+    <div className={`rounded-xl px-3 py-2 border ${good ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={`text-sm font-extrabold ${good ? "text-emerald-700" : "text-amber-700"}`}>{value}</div>
+    </div>
+  );
+}
+
+function AutomationTab({ adminEmail }: { adminEmail: string }) {
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [month, setMonth] = useState(() => format(addMonths(new Date(), 1), "yyyy-MM"));
   const [weeks, setWeeks] = useState(4);
-  const [start, setStart] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + ((7 - d.getDay()) % 7 || 7)); // next Sunday
-    return format(d, "yyyy-MM-dd");
-  });
+  const [keepLeave, setKeepLeave] = useState(true);
+  const [offset, setOffset] = useState(0);
+  const [gyPool, setGyPool] = useState<string[]>([]);
+  const [fixed, setFixed] = useState<Record<string, string>>({});
+  const [preview, setPreview] = useState<GenResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [showPool, setShowPool] = useState(false);
+
+  const start = useMemo(() => nearestSunday(parseISO(`${month}-01`)), [month]);
+  const end = useMemo(() => addDays(start, weeks * 7 - 1), [start, weeks]);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const { data } = await supabase.from("agents").select("*").eq("active", true).order("name");
+      if (cancel) return;
+      const list = (data as Agent[] | null) ?? [];
+      setAgents(list);
+      const saved = (() => {
+        try { return JSON.parse(localStorage.getItem(CFG_KEY) ?? "null"); } catch { return null; }
+      })();
+      if (saved?.gyPool?.length) {
+        setGyPool(saved.gyPool.filter((id: string) => list.some((a) => a.id === id)));
+      } else {
+        setGyPool(list.filter((a) => !a.is_lead && GY_DEFAULTS.some((t) => hits(a.name, t))).map((a) => a.id));
+      }
+      if (saved?.fixed) setFixed(saved.fixed);
+      else {
+        const f: Record<string, string> = {};
+        for (const [toks, code] of FIXED_DEFAULTS) {
+          const m = list.find((a) => hits(a.name, toks));
+          if (m) f[m.id] = code;
+        }
+        setFixed(f);
+      }
+      setLoading(false);
+    })();
+    return () => { cancel = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loading) localStorage.setItem(CFG_KEY, JSON.stringify({ gyPool, fixed }));
+  }, [gyPool, fixed, loading]);
+
+  const leads = agents.filter((a) => a.is_lead);
+  const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+
+  async function runPreview() {
+    setBusy(true);
+    setPreview(null);
+    try {
+      const from = format(start, "yyyy-MM-dd");
+      const to = format(end, "yyyy-MM-dd");
+      // Carry across leave already recorded so generating never wipes a real
+      // AL/SL/holiday that someone entered by hand.
+      const leave: Record<string, string> = {};
+      if (keepLeave) {
+        const existing = await fetchSchedulesInRange(from, to);
+        for (const r of existing) {
+          const c = r.shift_code.trim().toUpperCase();
+          if (!/^S[0-9.]+$/.test(c) && c !== "OFF") leave[`${r.agent_id}|${r.date}`] = r.shift_code;
+        }
+      }
+      // Rotation offset rotates who holds which off-pattern, so two months in a
+      // row don't hand the same person the same days off.
+      const ordered = [...agents].sort((a, b) => a.name.localeCompare(b.name));
+      const rotated = offset ? [...ordered.slice(offset % ordered.length), ...ordered.slice(0, offset % ordered.length)] : ordered;
+      const res = generateSchedule({
+        agents: rotated.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+        startSunday: from,
+        weeks,
+        gyPool,
+        fixedShift: fixed,
+        leave,
+      });
+      setPreview(res);
+      if (res.warnings.length) toast.warning(`${res.warnings.length} rule warning(s)`);
+      else toast.success("Preview ready — all rules satisfied");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function apply() {
+    if (!preview) return;
+    if (!confirm(`Replace the schedule for ${agents.length} agents from ${format(start, "MMM d")} to ${format(end, "MMM d, yyyy")}?`)) return;
+    setBusy(true);
+    try {
+      const from = preview.dates[0];
+      const to = preview.dates[preview.dates.length - 1];
+      const ids = agents.map((a) => a.id);
+      const { error: delErr } = await supabase
+        .from("schedules").delete().gte("date", from).lte("date", to).in("agent_id", ids);
+      if (delErr) { toast.error(delErr.message); return; }
+      const rows = preview.cells.map((c) => ({ agent_id: c.agent_id, date: c.date, shift_code: c.shift_code }));
+      for (let i = 0; i < rows.length; i += 500) {
+        const { error } = await supabase.from("schedules").insert(rows.slice(i, i + 500));
+        if (error) { toast.error(error.message); return; }
+      }
+      toast.success(`Applied ${rows.length} shifts`);
+      await supabase.from("audit_log").insert({
+        user_email: adminEmail, action: "schedule_generated",
+        details: { from, to, weeks, cells: rows.length },
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** CSV shaped like the existing Google Sheet, ready to paste into it. */
+  function exportForSheet() {
+    if (!preview) return;
+    const head = [format(start, "MMMM"), ...preview.dates.map((d) => format(parseISO(d), "EEEE-dd"))];
+    const lookup = new Map(preview.cells.map((c) => [`${c.agent_id}|${c.date}`, c.shift_code]));
+    const lines = [head.join(",")];
+    for (const a of agents) {
+      lines.push([`"${a.name}"`, ...preview.dates.map((d) => lookup.get(`${a.id}|${d}`) ?? "")].join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const el = document.createElement("a");
+    el.href = url;
+    el.download = `CX Schedule - ${format(start, "MMMM yyyy")}.csv`;
+    el.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const s = preview?.stats;
+  const rng = (a: number[]) => `${Math.min(...a)}–${Math.max(...a)}`;
+  const onlyKey = (o: Record<number, number>, k: number) => Object.keys(o).every((x) => +x === k);
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Hero — deliberately not the app's green, so automation reads as its own thing */}
       <div
-        className="rounded-2xl p-5 text-white relative overflow-hidden"
-        style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7 50%,#52B788)" }}
+        className="rounded-2xl px-5 py-4 text-white flex items-center gap-3"
+        style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7 55%,#52B788)" }}
       >
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-white/20 grid place-items-center backdrop-blur-sm">
-            <Sparkles size={18} />
+        <div className="w-9 h-9 rounded-xl bg-white/20 grid place-items-center backdrop-blur-sm shrink-0">
+          <Sparkles size={18} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-lg font-bold leading-tight">Schedule Generator</div>
+          <div className="text-[12px] text-white/85">
+            {loading ? "Loading roster…" : `${agents.length} active agents · ${leads.length} shift leads · ${gyPool.length} graveyard-eligible`}
           </div>
-          <div>
-            <div className="text-lg font-bold leading-tight">Schedule Generator</div>
-            <div className="text-[12px] text-white/80">
-              Builds a full rotation from your rules — deterministic, no guessing
-            </div>
-          </div>
-          <span className="ml-auto text-[10px] font-bold uppercase tracking-wider bg-white/20 rounded-full px-2.5 py-1">
-            Beta
-          </span>
         </div>
       </div>
 
@@ -1858,11 +2016,9 @@ function AutomationTab() {
         <div className="label-caps text-slate-500">Period</div>
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold text-slate-500">Start (Sunday)</label>
+            <label className="text-[11px] font-semibold text-slate-500">Month</label>
             <input
-              type="date"
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
+              type="month" value={month} onChange={(e) => { setMonth(e.target.value); setPreview(null); }}
               className="glass rounded-xl px-3 py-2 text-sm outline-none"
             />
           </div>
@@ -1871,84 +2027,185 @@ function AutomationTab() {
             <div className="flex gap-1">
               {[4, 5].map((w) => (
                 <button
-                  key={w}
-                  onClick={() => setWeeks(w)}
+                  key={w} onClick={() => { setWeeks(w); setPreview(null); }}
                   className={`rounded-xl px-4 py-2 text-sm font-bold transition-all ${
                     weeks === w ? "bg-violet-600 text-white shadow-sm" : "glass text-slate-600"
                   }`}
-                >
-                  {w}
-                </button>
+                >{w}</button>
               ))}
             </div>
           </div>
-          <button
-            disabled
-            title="Waiting on a few rule confirmations before this can run"
-            className="ml-auto rounded-xl px-4 py-2.5 text-sm font-bold text-white flex items-center gap-2 opacity-50 cursor-not-allowed"
-            style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7)" }}
-          >
-            <Sparkles size={15} /> Generate preview
-          </button>
-        </div>
-        <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-          Generator is not wired up yet — a few rules still need confirming (graveyard pool,
-          fixed-shift agents, and the weekend off-targets below).
+          <div className="rounded-xl bg-violet-50 border border-violet-200 px-3 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-500">Covers</div>
+            <div className="text-sm font-bold text-violet-800">
+              {format(start, "EEE d MMM")} → {format(end, "EEE d MMM yyyy")}
+            </div>
+          </div>
         </div>
       </GlassCard>
 
-      {/* What the past 3 months actually show */}
-      <GlassCard className="p-4 flex flex-col gap-3">
-        <div className="label-caps text-slate-500">Detected from June–Aug 2026</div>
-        <div className="grid sm:grid-cols-2 gap-2">
-          {DETECTED.map((r) => (
-            <div key={r.k} className="rounded-xl border border-violet-100 bg-violet-50/40 p-3">
-              <div className="flex items-baseline justify-between gap-2">
-                <div className="text-[12px] font-semibold text-slate-700">{r.k}</div>
-                <div className="text-sm font-extrabold text-violet-700 shrink-0">{r.v}</div>
-              </div>
-              <div className="text-[10px] text-slate-500 mt-0.5">{r.note}</div>
+      {/* Options */}
+      <GlassCard className="p-4 flex flex-col gap-3.5">
+        <div className="label-caps text-slate-500">Options</div>
+        <Toggle
+          on={keepLeave} set={(v) => { setKeepLeave(v); setPreview(null); }}
+          label="Keep existing leave"
+          hint="Preserves AL, SL, DL, birthdays and holidays already entered for these dates."
+        />
+        <div className="flex items-center gap-3 pt-1">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-slate-700">Rotation offset</div>
+            <div className="text-[11px] text-slate-500 leading-snug">
+              Shifts who gets which days off, so consecutive months don't repeat the same pattern.
             </div>
-          ))}
+          </div>
+          <input
+            type="number" min={0} max={20} value={offset}
+            onChange={(e) => { setOffset(Math.max(0, Number(e.target.value) || 0)); setPreview(null); }}
+            className="glass rounded-xl px-3 py-2 text-sm w-20 text-center outline-none shrink-0"
+          />
         </div>
       </GlassCard>
 
-      {/* Coverage curve */}
+      {/* Roster rules */}
       <GlassCard className="p-4 flex flex-col gap-3">
-        <div className="label-caps text-slate-500">Measured coverage by weekday</div>
-        <div className="text-[11px] text-slate-500 -mt-1">
-          Off-per-day is <span className="font-semibold">not</span> flat 6–9: Fri/Sat carry the weekend load.
-        </div>
-        <div className="flex flex-col gap-1.5">
-          {WEEKDAY_TARGETS.map((r) => (
-            <div key={r.d} className="flex items-center gap-3">
-              <div className="w-10 text-xs font-bold text-slate-600">{r.d}</div>
-              <div className="flex-1 h-6 rounded-lg bg-slate-100 overflow-hidden flex">
-                <div
-                  className="h-full flex items-center justify-end pr-1.5 text-[10px] font-bold text-white"
-                  style={{ width: `${(r.work / 34) * 100}%`, background: "#52B788" }}
-                >
-                  {r.work.toFixed(0)}
-                </div>
-                <div
-                  className="h-full flex items-center pl-1.5 text-[10px] font-bold text-rose-700"
-                  style={{ width: `${(r.off / 34) * 100}%`, background: "#ffe5e5" }}
-                >
-                  {r.off.toFixed(0)}
-                </div>
-              </div>
-            </div>
+        <button onClick={() => setShowPool((v) => !v)} className="flex items-center justify-between w-full">
+          <span className="label-caps text-slate-500">Roster rules</span>
+          <span className="text-[11px] font-semibold text-violet-600">{showPool ? "Hide" : "Edit"}</span>
+        </button>
+        <div className="flex flex-wrap gap-1.5">
+          {leads.map((a) => (
+            <span key={a.id} className="text-[11px] font-semibold rounded-full px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">
+              <Crown size={11} /> {a.name}
+            </span>
+          ))}
+          {Object.entries(fixed).map(([id, code]) => (
+            <span key={id} className="text-[11px] font-semibold rounded-full px-2.5 py-1 bg-slate-100 text-slate-600 border border-slate-200">
+              {byId.get(id)?.name ?? "?"} · fixed {code}
+            </span>
           ))}
         </div>
-        <div className="flex items-center gap-4 text-[10px] text-slate-500">
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: "#52B788" }} /> working
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: "#ffe5e5" }} /> off
-          </span>
-        </div>
+        {leads.length < 4 && (
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+            Only {leads.length} lead(s) marked. 2–3 leads are needed on morning and evening every
+            day, so at least 4 are required — mark more with the crown in the Agents tab.
+          </div>
+        )}
+        {showPool && (
+          <div className="flex flex-col gap-3 pt-1">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 mb-1.5">
+                Graveyard eligible (S6) — leads are excluded automatically
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {agents.filter((a) => !a.is_lead).map((a) => {
+                  const on = gyPool.includes(a.id);
+                  return (
+                    <button
+                      key={a.id}
+                      onClick={() => { setGyPool((p) => on ? p.filter((x) => x !== a.id) : [...p, a.id]); setPreview(null); }}
+                      className={`text-[11px] font-semibold rounded-full px-2.5 py-1 border transition-all ${
+                        on ? "bg-indigo-600 text-white border-indigo-600" : "bg-white/60 text-slate-500 border-slate-200"
+                      }`}
+                    >{a.name}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 mb-1.5">
+                Fixed shift — these agents never rotate
+              </div>
+              <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto show-scroll pr-1">
+                {agents.map((a) => (
+                  <div key={a.id} className="flex items-center gap-2">
+                    <span className="text-xs text-slate-600 flex-1 truncate">{a.name}</span>
+                    <select
+                      value={fixed[a.id] ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setFixed((f) => { const n = { ...f }; if (v) n[a.id] = v; else delete n[a.id]; return n; });
+                        setPreview(null);
+                      }}
+                      className="glass rounded-lg px-2 py-1 text-[11px] outline-none shrink-0"
+                    >
+                      <option value="">rotates</option>
+                      {ALL_SHIFT_CODES.filter((c) => /^S[0-9.]+$/.test(c)).map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </GlassCard>
+
+      {/* Actions */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={runPreview} disabled={busy || loading || agents.length === 0}
+          className="rounded-xl px-4 py-2.5 text-sm font-bold text-white flex items-center gap-2 active:scale-95 disabled:opacity-50"
+          style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7)" }}
+        >
+          <Sparkles size={15} /> {busy ? "Working…" : "Generate preview"}
+        </button>
+        {preview && (
+          <>
+            <button
+              onClick={apply} disabled={busy}
+              className="rounded-xl bg-[#1e5a3d] text-white px-4 py-2.5 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50"
+            >
+              <Check size={15} /> Apply to schedule
+            </button>
+            <button
+              onClick={exportForSheet}
+              className="rounded-xl glass px-3.5 py-2.5 text-sm font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95"
+            >
+              <Download size={15} /> CSV for Sheets
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* Result */}
+      {preview && s && (
+        <GlassCard className="p-4 flex flex-col gap-3">
+          <div className="label-caps text-slate-500">Rule check</div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <StatChip label="Work blocks" value={onlyKey(s.workBlocks, 5) ? "all 5 days" : "mixed"} good={onlyKey(s.workBlocks, 5)} />
+            <StatChip label="Off blocks" value={onlyKey(s.offBlocks, 2) ? "all 2 days" : "mixed"} good={onlyKey(s.offBlocks, 2)} />
+            <StatChip label="Graveyard / day" value={rng(s.gyPerDay)} good={Math.min(...s.gyPerDay) >= 2} />
+            <StatChip label="Leads morning" value={rng(s.morningLeadsPerDay)} good={Math.min(...s.morningLeadsPerDay) >= 2} />
+            <StatChip label="Leads evening" value={rng(s.eveningLeadsPerDay)} good={Math.min(...s.eveningLeadsPerDay) >= 2} />
+            <StatChip label="Shifts" value={String(preview.cells.length)} good />
+          </div>
+
+          <div className="label-caps text-slate-500 mt-1">Off per weekday</div>
+          <div className="flex flex-col gap-1">
+            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, i) => (
+              <div key={d} className="flex items-center gap-2">
+                <span className="w-9 text-[11px] font-bold text-slate-600">{d}</span>
+                <div className="flex-1 h-4 rounded-md bg-slate-100 overflow-hidden">
+                  <div className="h-full bg-violet-400" style={{ width: `${Math.min(100, (s.offByWeekday[i] / Math.max(1, agents.length)) * 100 * 2.2)}%` }} />
+                </div>
+                <span className="text-[11px] font-semibold text-slate-500 w-16 text-right">
+                  {s.offByWeekday[i].toFixed(1)} off
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {preview.warnings.length > 0 && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 flex flex-col gap-1">
+              {preview.warnings.map((w) => (
+                <div key={w} className="text-[11px] text-amber-800">• {w}</div>
+              ))}
+            </div>
+          )}
+        </GlassCard>
+      )}
     </div>
   );
 }
