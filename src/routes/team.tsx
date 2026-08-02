@@ -136,7 +136,7 @@ function TeamPage() {
           <button
             onClick={() => scrollStrip(-1)}
             className="w-9 h-9 shrink-0 rounded-full grid place-items-center text-sm font-bold text-slate-500 transition-colors hover:text-slate-800 active:scale-95"
-            style={{ background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)" }}
+            style={{ background: "var(--control-bg)", border: "1px solid var(--control-border)" }}
             aria-label="Scroll back"
           >
             ‹
@@ -167,7 +167,7 @@ function TeamPage() {
                   style={
                     selected
                       ? { background: "#52B788", color: "#fff", boxShadow: "0 4px 12px rgba(82,183,136,0.35)" }
-                      : { background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.05)", color: "#334155" }
+                      : { background: "var(--control-bg)", border: "1px solid var(--control-border)", color: "var(--control-ink)" }
                   }
                 >
                   <div className="text-[9px] font-bold uppercase tracking-wider opacity-70">
@@ -186,14 +186,14 @@ function TeamPage() {
           <button
             onClick={() => scrollStrip(1)}
             className="w-9 h-9 shrink-0 rounded-full grid place-items-center text-sm font-bold text-slate-500 transition-colors hover:text-slate-800 active:scale-95"
-            style={{ background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)" }}
+            style={{ background: "var(--control-bg)", border: "1px solid var(--control-border)" }}
             aria-label="Scroll forward"
           >
             ›
           </button>
           <label
             className="w-9 h-9 shrink-0 rounded-full grid place-items-center cursor-pointer text-slate-500 hover:text-slate-700 transition-colors"
-            style={{ background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)" }}
+            style={{ background: "var(--control-bg)", border: "1px solid var(--control-border)" }}
           >
             <CalIcon size={15} />
             <input
@@ -216,7 +216,7 @@ function TeamPage() {
                 style={
                   filter === f.key
                     ? { background: "#1e5a3d", color: "#fff", boxShadow: "0 3px 9px rgba(30,90,61,0.28)" }
-                    : { background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.05)", color: "#475569" }
+                    : { background: "var(--control-bg)", border: "1px solid var(--control-border)", color: "var(--control-ink)" }
                 }
               >
                 {f.label}
@@ -225,7 +225,7 @@ function TeamPage() {
           </div>
           <div
             className="rounded-xl flex items-center px-3 gap-2 flex-1"
-            style={{ background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.05)" }}
+            style={{ background: "var(--control-bg)", border: "1px solid var(--control-border)" }}
           >
             <Search size={14} className="text-slate-400 shrink-0" />
             <input

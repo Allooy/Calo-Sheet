@@ -292,6 +292,17 @@
   --nav-border: rgba(255,255,255,0.9);
   --nav-shadow: 0 10px 36px rgba(82,183,136,0.22), 0 2px 8px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.8);
   --nav-chip: rgba(255,255,255,0.72);
+
+  /* Ink used on top of the hero gradient. */
+  --hero-ink-1: #1a3d2b;
+  --hero-ink-2: rgba(30,90,61,0.55);
+  --hero-ink-3: rgba(30,90,61,0.42);
+  --hero-ink-line: rgba(30,90,61,0.12);
+
+  /* Pills, date chips and search fields on the Team page. */
+  --control-bg: rgba(255,255,255,0.7);
+  --control-border: rgba(0,0,0,0.06);
+  --control-ink: #334155;
 }
 
 .dark {
@@ -328,6 +339,15 @@
   --nav-border: rgba(255,255,255,0.12);
   --nav-shadow: 0 10px 36px rgba(0,0,0,0.45), 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
   --nav-chip: rgba(255,255,255,0.10);
+
+  --hero-ink-1: #b9f0d3;
+  --hero-ink-2: rgba(185,240,211,0.72);
+  --hero-ink-3: rgba(185,240,211,0.52);
+  --hero-ink-line: rgba(185,240,211,0.18);
+
+  --control-bg: rgba(255,255,255,0.08);
+  --control-border: rgba(255,255,255,0.14);
+  --control-ink: #cbd5e1;
 }
 
 .dark body {

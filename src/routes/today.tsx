@@ -60,19 +60,15 @@ function TodayPage() {
   const myCatStyle = categoryStyle(myCat);
   const timeRange = mySchedule ? formatTimeRange(mySchedule.shift_code, shiftTypes) : null;
 
-  // graveyard text (#a5b4fc) is designed for dark backgrounds — use the deeper dot color on white
-  const heroCodeColor =
-    myCat === "graveyard" ? "#4338ca" :
-    myCat === "off" ? "#64748b" :
-    myCatStyle.text;
+  // The category tokens already resolve per theme (deep indigo on the light
+  // hero, light indigo on the dark one), so no literal override is needed —
+  // a fixed hex here goes dark-on-dark once the hero flips.
+  const heroCodeColor = myCatStyle.text;
 
   const tomorrowRow = agent ? tomorrowSchedules.find((s) => s.agent_id === agent.id) : null;
   const tomorrowCat: ShiftCategory = shiftCategory(tomorrowRow?.shift_code);
   const tomorrowTime = tomorrowRow ? formatTimeRange(tomorrowRow.shift_code, shiftTypes) : null;
-  const tomorrowCodeColor =
-    tomorrowCat === "graveyard" ? "#4338ca" :
-    tomorrowCat === "off" ? "#64748b" :
-    categoryStyle(tomorrowCat).text;
+  const tomorrowCodeColor = categoryStyle(tomorrowCat).text;
 
   const teammates = useMemo(() => {
     if (!agent || !mySchedule) return [];
@@ -117,8 +113,8 @@ function TodayPage() {
             {/* Date row */}
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="label-caps" style={{ color: "rgba(30,90,61,0.55)" }}>Your shift today</div>
-                <div className="mt-1 text-xl font-bold" style={{ color: "#1a3d2b" }}>
+                <div className="label-caps" style={{ color: "var(--hero-ink-2)" }}>Your shift today</div>
+                <div className="mt-1 text-xl font-bold" style={{ color: "var(--hero-ink-1)" }}>
                   {format(new Date(), "EEEE, MMMM d")}
                 </div>
               </div>
@@ -139,16 +135,16 @@ function TodayPage() {
                 <div className="h-4 w-28 rounded-full animate-pulse" style={{ background: "var(--on-hero)" }} />
               </div>
             ) : !mySchedule ? (
-              <div className="mt-10 text-center text-sm" style={{ color: "rgba(30,90,61,0.45)" }}>
+              <div className="mt-10 text-center text-sm" style={{ color: "var(--hero-ink-3)" }}>
                 Schedule not set for today
               </div>
             ) : myCat === "off" ? (
               <div className="mt-8 text-center">
                 <div className="text-5xl mb-3 animate-[scale-in_0.3s_ease-out]">🌿</div>
-                <div className="text-3xl font-black tracking-tight" style={{ color: "#1a3d2b" }}>
+                <div className="text-3xl font-black tracking-tight" style={{ color: "var(--hero-ink-1)" }}>
                   You're off today
                 </div>
-                <div className="mt-2 label-caps" style={{ color: "rgba(30,90,61,0.45)" }}>
+                <div className="mt-2 label-caps" style={{ color: "var(--hero-ink-3)" }}>
                   {mySchedule.shift_code}
                 </div>
               </div>
@@ -161,10 +157,10 @@ function TodayPage() {
                   {mySchedule.shift_code}
                 </div>
                 {timeRange && (
-                  <div className="mt-3 text-base font-semibold" style={{ color: "rgba(30,90,61,0.55)" }}>{timeRange}</div>
+                  <div className="mt-3 text-base font-semibold" style={{ color: "var(--hero-ink-2)" }}>{timeRange}</div>
                 )}
                 {mySchedule.notes && (
-                  <div className="mt-1.5 text-sm" style={{ color: "rgba(30,90,61,0.4)" }}>{mySchedule.notes}</div>
+                  <div className="mt-1.5 text-sm" style={{ color: "var(--hero-ink-3)" }}>{mySchedule.notes}</div>
                 )}
               </div>
             )}
@@ -172,12 +168,12 @@ function TodayPage() {
             {/* Bottom greeting */}
             <div
               className="mt-6 pt-4 flex items-center justify-between"
-              style={{ borderTop: "1px solid rgba(30,90,61,0.12)" }}
+              style={{ borderTop: "1px solid var(--hero-ink-line)" }}
             >
-              <span className="text-sm font-medium" style={{ color: "rgba(30,90,61,0.6)" }}>
+              <span className="text-sm font-medium" style={{ color: "var(--hero-ink-2)" }}>
                 {agent?.name ? `Hey, ${agent.name.split(" ")[0]} 👋` : "Welcome back"}
               </span>
-              <span className="text-xs" style={{ color: "rgba(30,90,61,0.4)" }}>
+              <span className="text-xs" style={{ color: "var(--hero-ink-3)" }}>
                 {format(new Date(), "EEE · MMM d")}
               </span>
             </div>
@@ -311,12 +307,12 @@ function TodayPage() {
           >
             <div className="p-5 flex items-center justify-between gap-4">
               <div className="min-w-0">
-                <div className="label-caps" style={{ color: "rgba(30,90,61,0.55)" }}>Tomorrow</div>
-                <div className="text-base font-bold mt-0.5 truncate" style={{ color: "#1a3d2b" }}>
+                <div className="label-caps" style={{ color: "var(--hero-ink-2)" }}>Tomorrow</div>
+                <div className="text-base font-bold mt-0.5 truncate" style={{ color: "var(--hero-ink-1)" }}>
                   {format(tomorrowDate, "EEEE, MMM d")}
                 </div>
                 {tomorrowTime && (
-                  <div className="text-sm font-semibold mt-1" style={{ color: "rgba(30,90,61,0.55)" }}>
+                  <div className="text-sm font-semibold mt-1" style={{ color: "var(--hero-ink-2)" }}>
                     {tomorrowTime}
                   </div>
                 )}
@@ -326,9 +322,9 @@ function TodayPage() {
                 {loading ? (
                   <div className="h-12 w-20 rounded-2xl animate-pulse" style={{ background: "var(--on-hero)" }} />
                 ) : !tomorrowRow ? (
-                  <div className="text-sm font-medium" style={{ color: "rgba(30,90,61,0.45)" }}>Not set</div>
+                  <div className="text-sm font-medium" style={{ color: "var(--hero-ink-3)" }}>Not set</div>
                 ) : tomorrowCat === "off" ? (
-                  <div className="text-3xl font-black tracking-tight" style={{ color: "#1a3d2b" }}>
+                  <div className="text-3xl font-black tracking-tight" style={{ color: "var(--hero-ink-1)" }}>
                     Off 🌿
                   </div>
                 ) : (
