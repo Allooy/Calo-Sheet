@@ -24,6 +24,7 @@ import {
   Pencil,
   Trash2,
   ImagePlus,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GlassCard } from "@/components/GlassCard";
@@ -54,6 +55,7 @@ const TABS = [
   { key: "upload", label: "Upload" },
   { key: "agents", label: "Agents" },
   { key: "log", label: "Log" },
+  { key: "auto", label: "Automation" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -71,19 +73,32 @@ function AdminPage() {
   return (
     <div className="max-w-6xl mx-auto flex flex-col gap-5">
         <div className="glass rounded-2xl p-1.5 flex gap-1 overflow-x-auto">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`shrink-0 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all ${
-                tab === t.key
-                  ? "bg-white text-[#1e5a3d] shadow-sm"
-                  : "text-slate-600 hover:bg-white/40"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            const magic = t.key === "auto"; // the automation tab gets its own identity
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`shrink-0 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                  tab === t.key
+                    ? magic
+                      ? "text-white shadow-md"
+                      : "bg-white text-[#1e5a3d] shadow-sm"
+                    : magic
+                      ? "text-violet-600 hover:bg-violet-500/10"
+                      : "text-slate-600 hover:bg-white/40"
+                }`}
+                style={
+                  tab === t.key && magic
+                    ? { background: "linear-gradient(120deg,#7c3aed,#a855f7 55%,#52B788)" }
+                    : undefined
+                }
+              >
+                {magic && <Sparkles size={13} className={tab === t.key ? "" : "opacity-80"} />}
+                {t.label}
+              </button>
+            );
+          })}
         </div>
         <div key={tab} className="animate-[fade-in_0.2s_ease-out]">
           {tab === "overview" && <TeamMonthGrid />}
@@ -94,6 +109,7 @@ function AdminPage() {
           {tab === "upload" && <UploadTab adminEmail={agent.email} />}
           {tab === "agents" && <AgentsTab adminEmail={agent.email} />}
           {tab === "log" && <LogTab />}
+          {tab === "auto" && <AutomationTab />}
         </div>
     </div>
   );
@@ -1440,6 +1456,26 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     await supabase.from("audit_log").insert({ user_email: adminEmail, action: "agent_active_toggled", details: { id: a.id, active: !a.active } });
   }
 
+  function exportAgentsCSV() {
+    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const head = ["Name", "Email", "Role", "Lead", "Active", "Avatar URL", "Created"];
+    const lines = [head.join(",")];
+    for (const a of agents) {
+      lines.push([
+        esc(a.name), esc(a.email), esc(a.role),
+        a.is_lead ? "yes" : "no", a.active ? "yes" : "no",
+        esc(a.avatar_url), esc(a.created_at),
+      ].join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const el = document.createElement("a");
+    el.href = url;
+    el.download = `agents-${format(new Date(), "yyyy-MM-dd")}.csv`;
+    el.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function toggleLead(a: Agent) {
     const { error } = await supabase.from("agents").update({ is_lead: !a.is_lead }).eq("id", a.id);
     if (error) return toast.error(error.message);
@@ -1453,12 +1489,20 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
         <div className="text-xs text-slate-500">
           {agents.length} total · {agents.filter((a) => a.active).length} active
         </div>
-        <button
-          onClick={openAdd}
-          className="rounded-xl bg-[#1e5a3d] text-white px-3.5 py-2 text-xs font-bold flex items-center gap-1.5 active:scale-95"
-        >
-          <Plus size={15} /> Add agent
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={exportAgentsCSV}
+            className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95"
+          >
+            <Download size={14} /> CSV
+          </button>
+          <button
+            onClick={openAdd}
+            className="rounded-xl bg-[#1e5a3d] text-white px-3.5 py-2 text-xs font-bold flex items-center gap-1.5 active:scale-95"
+          >
+            <Plus size={15} /> Add agent
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -1751,6 +1795,160 @@ function LogTab() {
           </div>
         </GlassCard>
       ))}
+    </div>
+  );
+}
+
+/* ============ Automation (schedule generator) ============ */
+
+// Coverage shape measured from June–Aug 2026 (3 real months, 91 days).
+// Fri/Sat are the weekend here, so OFF is deliberately heavier then.
+const WEEKDAY_TARGETS = [
+  { d: "Sun", off: 6.5, work: 26.3 },
+  { d: "Mon", off: 6.5, work: 27.3 },
+  { d: "Tue", off: 8.6, work: 24.8 },
+  { d: "Wed", off: 8.7, work: 24.5 },
+  { d: "Thu", off: 11.0, work: 22.8 },
+  { d: "Fri", off: 16.8, work: 17.5 },
+  { d: "Sat", off: 13.2, work: 21.0 },
+];
+
+const DETECTED = [
+  { k: "2 days off in a row", v: "98%", note: "339 of 345 off-blocks — effectively absolute" },
+  { k: "5 days on in a row", v: "62%", note: "flexes 4–6; 5 is the target, not a hard rule" },
+  { k: "Weekly morning ↔ evening flip", v: "56%", note: "alternating is the default, 23% repeat" },
+  { k: "Graveyard S6 per day", v: "2–3", note: "mean 2.1, never below 2" },
+  { k: "S5.5 used", v: "never", note: "0 occurrences in 3 months" },
+  { k: "Built in whole Sun–Sat weeks", v: "4–5", note: "not calendar months — sheets start on a Sunday" },
+];
+
+function AutomationTab() {
+  const [weeks, setWeeks] = useState(4);
+  const [start, setStart] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + ((7 - d.getDay()) % 7 || 7)); // next Sunday
+    return format(d, "yyyy-MM-dd");
+  });
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Hero — deliberately not the app's green, so automation reads as its own thing */}
+      <div
+        className="rounded-2xl p-5 text-white relative overflow-hidden"
+        style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7 50%,#52B788)" }}
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-white/20 grid place-items-center backdrop-blur-sm">
+            <Sparkles size={18} />
+          </div>
+          <div>
+            <div className="text-lg font-bold leading-tight">Schedule Generator</div>
+            <div className="text-[12px] text-white/80">
+              Builds a full rotation from your rules — deterministic, no guessing
+            </div>
+          </div>
+          <span className="ml-auto text-[10px] font-bold uppercase tracking-wider bg-white/20 rounded-full px-2.5 py-1">
+            Beta
+          </span>
+        </div>
+      </div>
+
+      {/* Period */}
+      <GlassCard className="p-4 flex flex-col gap-3">
+        <div className="label-caps text-slate-500">Period</div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-slate-500">Start (Sunday)</label>
+            <input
+              type="date"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              className="glass rounded-xl px-3 py-2 text-sm outline-none"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-slate-500">Weeks</label>
+            <div className="flex gap-1">
+              {[4, 5].map((w) => (
+                <button
+                  key={w}
+                  onClick={() => setWeeks(w)}
+                  className={`rounded-xl px-4 py-2 text-sm font-bold transition-all ${
+                    weeks === w ? "bg-violet-600 text-white shadow-sm" : "glass text-slate-600"
+                  }`}
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            disabled
+            title="Waiting on a few rule confirmations before this can run"
+            className="ml-auto rounded-xl px-4 py-2.5 text-sm font-bold text-white flex items-center gap-2 opacity-50 cursor-not-allowed"
+            style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7)" }}
+          >
+            <Sparkles size={15} /> Generate preview
+          </button>
+        </div>
+        <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+          Generator is not wired up yet — a few rules still need confirming (graveyard pool,
+          fixed-shift agents, and the weekend off-targets below).
+        </div>
+      </GlassCard>
+
+      {/* What the past 3 months actually show */}
+      <GlassCard className="p-4 flex flex-col gap-3">
+        <div className="label-caps text-slate-500">Detected from June–Aug 2026</div>
+        <div className="grid sm:grid-cols-2 gap-2">
+          {DETECTED.map((r) => (
+            <div key={r.k} className="rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="text-[12px] font-semibold text-slate-700">{r.k}</div>
+                <div className="text-sm font-extrabold text-violet-700 shrink-0">{r.v}</div>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{r.note}</div>
+            </div>
+          ))}
+        </div>
+      </GlassCard>
+
+      {/* Coverage curve */}
+      <GlassCard className="p-4 flex flex-col gap-3">
+        <div className="label-caps text-slate-500">Measured coverage by weekday</div>
+        <div className="text-[11px] text-slate-500 -mt-1">
+          Off-per-day is <span className="font-semibold">not</span> flat 6–9: Fri/Sat carry the weekend load.
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {WEEKDAY_TARGETS.map((r) => (
+            <div key={r.d} className="flex items-center gap-3">
+              <div className="w-10 text-xs font-bold text-slate-600">{r.d}</div>
+              <div className="flex-1 h-6 rounded-lg bg-slate-100 overflow-hidden flex">
+                <div
+                  className="h-full flex items-center justify-end pr-1.5 text-[10px] font-bold text-white"
+                  style={{ width: `${(r.work / 34) * 100}%`, background: "#52B788" }}
+                >
+                  {r.work.toFixed(0)}
+                </div>
+                <div
+                  className="h-full flex items-center pl-1.5 text-[10px] font-bold text-rose-700"
+                  style={{ width: `${(r.off / 34) * 100}%`, background: "#ffe5e5" }}
+                >
+                  {r.off.toFixed(0)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-4 text-[10px] text-slate-500">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: "#52B788" }} /> working
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: "#ffe5e5" }} /> off
+          </span>
+        </div>
+      </GlassCard>
     </div>
   );
 }
