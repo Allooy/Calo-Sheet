@@ -263,6 +263,35 @@
   --text-strong: #1e293b;
   --text-muted: #64748b;
   --today-ink: #2d7a56;
+
+  /* Shift chips. Referenced from inline styles via shifts.ts, which is the only
+     way these can follow the theme — a CSS override can't reach inline hex. */
+  --sh-morning-bg: #d6f2e4;   --sh-morning-text: #1e5a3d;   --sh-morning-dot: #52B788;
+  --sh-morning-soft: rgba(214,242,228,0.55);
+  --sh-evening-bg: #fff3e0;   --sh-evening-text: #b45309;   --sh-evening-dot: #f59e0b;
+  --sh-evening-soft: rgba(255,243,224,0.55);
+  --sh-grave-bg: #e0e7ff;     --sh-grave-text: #4338ca;     --sh-grave-dot: #6366f1;
+  --sh-grave-soft: rgba(224,231,255,0.6);
+  --sh-off-bg: #f1f5f9;       --sh-off-text: #64748b;       --sh-off-dot: #94a3b8;
+  --sh-off-soft: rgba(241,245,249,0.6);
+  --sh-other-bg: #fef9c3;     --sh-other-text: #854d0e;     --sh-other-dot: #eab308;
+  --sh-other-soft: rgba(254,249,195,0.6);
+  --sh-offcode-bg: #ffe5e5;   --sh-offcode-text: #dc2626;   --sh-offcode-dot: #f87171;
+  --sh-offcode-soft: rgba(255,229,229,0.55);
+
+  /* Hero / nav / solid card surfaces used inline. */
+  --hero-grad: linear-gradient(155deg, #c2e8d8 0%, #d6f2e4 45%, #e8f5ef 100%);
+  --hero-grad-135: linear-gradient(135deg, #c2e8d8 0%, #d6f2e4 55%, #e8f5ef 100%);
+  --hero-border: rgba(255,255,255,0.7);
+  --hero-ink: #1e5a3d;
+  --on-hero: rgba(255,255,255,0.55);
+  --card-solid: rgba(255,255,255,0.82);
+  --card-solid-border: rgba(255,255,255,0.6);
+  --nav-fade: linear-gradient(to top, #ffffff 0%, #ffffff 45%, rgba(255,255,255,0.85) 65%, transparent 100%);
+  --nav-bg: linear-gradient(160deg, rgba(255,255,255,0.94) 0%, rgba(240,249,245,0.95) 100%);
+  --nav-border: rgba(255,255,255,0.9);
+  --nav-shadow: 0 10px 36px rgba(82,183,136,0.22), 0 2px 8px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.8);
+  --nav-chip: rgba(255,255,255,0.72);
 }
 
 .dark {
@@ -271,6 +300,34 @@
   --text-strong: #e6edf6;
   --text-muted: #94a3b8;
   --today-ink: #6ee7b7;
+
+  /* Dark chips: tinted translucent fills with light ink, rather than the light
+     pastels, which glare badly against a dark page. */
+  --sh-morning-bg: rgba(82,183,136,0.20);  --sh-morning-text: #7fe3b4; --sh-morning-dot: #52B788;
+  --sh-morning-soft: rgba(82,183,136,0.12);
+  --sh-evening-bg: rgba(245,158,11,0.18);  --sh-evening-text: #fbbf24; --sh-evening-dot: #f59e0b;
+  --sh-evening-soft: rgba(245,158,11,0.10);
+  --sh-grave-bg: rgba(99,102,241,0.24);    --sh-grave-text: #aab4ff;  --sh-grave-dot: #818cf8;
+  --sh-grave-soft: rgba(99,102,241,0.14);
+  --sh-off-bg: rgba(148,163,184,0.16);     --sh-off-text: #a8b4c4;    --sh-off-dot: #94a3b8;
+  --sh-off-soft: rgba(148,163,184,0.10);
+  --sh-other-bg: rgba(234,179,8,0.20);     --sh-other-text: #fde047;  --sh-other-dot: #eab308;
+  --sh-other-soft: rgba(234,179,8,0.12);
+  --sh-offcode-bg: rgba(248,113,113,0.18); --sh-offcode-text: #fca5a5; --sh-offcode-dot: #f87171;
+  --sh-offcode-soft: rgba(248,113,113,0.10);
+
+  --hero-grad: linear-gradient(155deg, #16352a 0%, #143028 45%, #12222c 100%);
+  --hero-grad-135: linear-gradient(135deg, #16352a 0%, #143028 55%, #12222c 100%);
+  --hero-border: rgba(255,255,255,0.10);
+  --hero-ink: #8fe7bd;
+  --on-hero: rgba(255,255,255,0.10);
+  --card-solid: rgba(24,34,48,0.86);
+  --card-solid-border: rgba(255,255,255,0.10);
+  --nav-fade: linear-gradient(to top, #0b1119 0%, #0b1119 45%, rgba(11,17,25,0.85) 65%, transparent 100%);
+  --nav-bg: linear-gradient(160deg, rgba(26,37,52,0.96) 0%, rgba(20,32,44,0.97) 100%);
+  --nav-border: rgba(255,255,255,0.12);
+  --nav-shadow: 0 10px 36px rgba(0,0,0,0.45), 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
+  --nav-chip: rgba(255,255,255,0.10);
 }
 
 .dark body {

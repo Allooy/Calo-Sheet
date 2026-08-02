@@ -268,7 +268,7 @@ function SchedulePage() {
                       background: today
                         ? "#52B788"
                         : empty
-                          ? "rgba(255,255,255,0.55)"
+                          ? "var(--card-solid)"
                           : s.bg,
                       color: today ? "#fff" : s.text,
                       ...(today

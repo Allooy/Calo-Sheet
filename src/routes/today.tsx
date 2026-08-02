@@ -108,9 +108,9 @@ function TodayPage() {
         <div
           className="rounded-3xl overflow-hidden animate-[fade-in_0.3s_ease-out]"
           style={{
-            background: "linear-gradient(155deg, #c2e8d8 0%, #d6f2e4 45%, #e8f5ef 100%)",
+            background: "var(--hero-grad)",
             boxShadow: "0 6px 32px rgba(82,183,136,0.22), 0 1px 4px rgba(0,0,0,0.04)",
-            border: "1px solid rgba(255,255,255,0.7)",
+            border: "1px solid var(--hero-border)",
           }}
         >
           <div className="p-6 md:p-8">
@@ -125,7 +125,7 @@ function TodayPage() {
               {mySchedule && !loading && (
                 <div
                   className="shrink-0 mt-1 text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-full"
-                  style={{ background: "rgba(255,255,255,0.55)", color: "#1e5a3d" }}
+                  style={{ background: "var(--on-hero)", color: "var(--hero-ink)" }}
                 >
                   {myCat === "off" ? "Day Off" : myCat}
                 </div>
@@ -135,8 +135,8 @@ function TodayPage() {
             {/* Shift display */}
             {loading ? (
               <div className="mt-8 flex flex-col items-center gap-3">
-                <div className="h-24 w-36 rounded-2xl animate-pulse" style={{ background: "rgba(255,255,255,0.4)" }} />
-                <div className="h-4 w-28 rounded-full animate-pulse" style={{ background: "rgba(255,255,255,0.3)" }} />
+                <div className="h-24 w-36 rounded-2xl animate-pulse" style={{ background: "var(--on-hero)" }} />
+                <div className="h-4 w-28 rounded-full animate-pulse" style={{ background: "var(--on-hero)" }} />
               </div>
             ) : !mySchedule ? (
               <div className="mt-10 text-center text-sm" style={{ color: "rgba(30,90,61,0.45)" }}>
@@ -244,9 +244,9 @@ function TodayPage() {
           <div
             className="rounded-3xl overflow-hidden"
             style={{
-              background: "rgba(255,255,255,0.82)",
+              background: "var(--card-solid)",
               backdropFilter: "blur(24px) saturate(140%)",
-              border: "1px solid rgba(255,255,255,0.6)",
+              border: "1px solid var(--card-solid-border)",
               boxShadow: "0 2px 16px rgba(0,0,0,0.05)",
             }}
           >
@@ -258,7 +258,8 @@ function TodayPage() {
               ] as const
             ).map(({ label, value, cat }, i, arr) => {
               const s = categoryStyle(cat);
-              const numColor = cat === "graveyard" ? "#4338ca" : s.text;
+              // s.text already resolves per theme; a literal here went invisible on dark.
+              const numColor = s.text;
               return (
                 <Link
                   key={cat}
@@ -303,8 +304,8 @@ function TodayPage() {
           <div
             className="rounded-3xl overflow-hidden"
             style={{
-              background: "linear-gradient(135deg, #c2e8d8 0%, #d6f2e4 55%, #e8f5ef 100%)",
-              border: "1px solid rgba(255,255,255,0.7)",
+              background: "var(--hero-grad-135)",
+              border: "1px solid var(--hero-border)",
               boxShadow: "0 4px 20px rgba(82,183,136,0.18)",
             }}
           >
@@ -323,7 +324,7 @@ function TodayPage() {
 
               <div className="text-right shrink-0">
                 {loading ? (
-                  <div className="h-12 w-20 rounded-2xl animate-pulse" style={{ background: "rgba(255,255,255,0.5)" }} />
+                  <div className="h-12 w-20 rounded-2xl animate-pulse" style={{ background: "var(--on-hero)" }} />
                 ) : !tomorrowRow ? (
                   <div className="text-sm font-medium" style={{ color: "rgba(30,90,61,0.45)" }}>Not set</div>
                 ) : tomorrowCat === "off" ? (

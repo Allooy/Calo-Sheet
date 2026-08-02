@@ -150,7 +150,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           style={
             scrolled
               ? {
-                  background: "rgba(255,255,255,0.72)",
+                  background: "var(--nav-chip)",
                   backdropFilter: "blur(20px) saturate(180%)",
                   WebkitBackdropFilter: "blur(20px) saturate(180%)",
                   borderBottom: "1px solid rgba(82,183,136,0.12)",
@@ -191,7 +191,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         style={{
           height: "calc(56px + 2.75rem)",
           background:
-            "linear-gradient(to top, #ffffff 0%, #ffffff 45%, rgba(255,255,255,0.85) 65%, transparent 100%)",
+            "var(--nav-fade)",
         }}
       />
 
@@ -199,12 +199,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         ref={navRef}
         className="md:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 inline-flex items-center p-1.5 rounded-full"
         style={{
-          background: "linear-gradient(160deg, rgba(255,255,255,0.94) 0%, rgba(240,249,245,0.95) 100%)",
+          background: "var(--nav-bg)",
           backdropFilter: "blur(28px) saturate(125%)",
           WebkitBackdropFilter: "blur(28px) saturate(125%)",
-          border: "1px solid rgba(255,255,255,0.9)",
+          border: "1px solid var(--nav-border)",
           boxShadow:
-            "0 10px 36px rgba(82,183,136,0.22), 0 2px 8px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.8)",
+            "var(--nav-shadow)",
         }}
       >
         {/* Sliding liquid pill — transform/width set imperatively (see effect) */}

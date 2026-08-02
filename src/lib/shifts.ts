@@ -13,24 +13,27 @@ export function shiftCategory(code: string | null | undefined): ShiftCategory {
   return "other";
 }
 
+// Colors resolve through CSS variables (defined per theme in styles.css) rather
+// than literal hex, because these land in inline styles — where a dark-mode CSS
+// override could never reach them.
 export function categoryStyle(cat: ShiftCategory) {
   switch (cat) {
     case "morning":
-      return { bg: "#d6f2e4", text: "#1e5a3d", dot: "#52B788", soft: "rgba(214,242,228,0.55)" };
+      return { bg: "var(--sh-morning-bg)", text: "var(--sh-morning-text)", dot: "var(--sh-morning-dot)", soft: "var(--sh-morning-soft)" };
     case "evening":
-      return { bg: "#fff3e0", text: "#b45309", dot: "#f59e0b", soft: "rgba(255,243,224,0.55)" };
+      return { bg: "var(--sh-evening-bg)", text: "var(--sh-evening-text)", dot: "var(--sh-evening-dot)", soft: "var(--sh-evening-soft)" };
     case "graveyard":
-      return { bg: "#e0e7ff", text: "#4338ca", dot: "#6366f1", soft: "rgba(224,231,255,0.6)" };
+      return { bg: "var(--sh-grave-bg)", text: "var(--sh-grave-text)", dot: "var(--sh-grave-dot)", soft: "var(--sh-grave-soft)" };
     case "off":
-      return { bg: "#f1f5f9", text: "#64748b", dot: "#94a3b8", soft: "rgba(241,245,249,0.6)" };
+      return { bg: "var(--sh-off-bg)", text: "var(--sh-off-text)", dot: "var(--sh-off-dot)", soft: "var(--sh-off-soft)" };
     case "other":
-      return { bg: "#fef9c3", text: "#854d0e", dot: "#eab308", soft: "rgba(254,249,195,0.6)" };
+      return { bg: "var(--sh-other-bg)", text: "var(--sh-other-text)", dot: "var(--sh-other-dot)", soft: "var(--sh-other-soft)" };
   }
 }
 
 // Per-code styling: the literal OFF code is light red; every other code (AL, SL,
 // DL, holidays, shifts…) follows its category color.
-const OFF_STYLE = { bg: "#ffe5e5", text: "#dc2626", dot: "#f87171", soft: "rgba(255,229,229,0.55)" };
+const OFF_STYLE = { bg: "var(--sh-offcode-bg)", text: "var(--sh-offcode-text)", dot: "var(--sh-offcode-dot)", soft: "var(--sh-offcode-soft)" };
 export function codeStyle(code: string | null | undefined) {
   if ((code ?? "").trim().toUpperCase() === "OFF") return OFF_STYLE;
   return categoryStyle(shiftCategory(code));
