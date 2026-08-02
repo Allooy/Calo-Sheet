@@ -119,19 +119,19 @@ export function TeamMonthGrid() {
                         key={d.toISOString()}
                         className="px-1.5 py-2 font-semibold text-center min-w-[46px] border-b border-white/40 sticky top-0 z-20 backdrop-blur-md"
                         style={{
-                          background: today ? "rgba(82,183,136,0.22)" : "rgba(255,255,255,0.95)",
+                          background: today ? "rgba(82,183,136,0.22)" : "var(--surface-sticky)",
                           boxShadow: today ? "inset 0 -3px 0 #52B788" : undefined,
                         }}
                       >
                         <div
                           className="text-[9px] uppercase"
-                          style={{ color: today ? "#2d7a56" : "#64748b", fontWeight: today ? 700 : 500 }}
+                          style={{ color: today ? "var(--today-ink)" : "var(--text-muted)", fontWeight: today ? 700 : 500 }}
                         >
                           {format(d, "EEE")}
                         </div>
                         <div
                           className="text-sm"
-                          style={{ color: today ? "#2d7a56" : "#1e293b", fontWeight: today ? 800 : 600 }}
+                          style={{ color: today ? "var(--today-ink)" : "var(--text-strong)", fontWeight: today ? 800 : 600 }}
                         >
                           {format(d, "d")}
                         </div>

@@ -20,6 +20,34 @@
 
 var SHEET_ID = '1obGJ8KlsziGhIVvaheQd3aiW0iG7peOjGSG3uFR_5TQ';
 
+/**
+ * Web-app endpoint so the CX Workforce admin can push a sync straight after
+ * generating, instead of waiting for a timer.
+ *
+ * Deploy → New deployment → Web app, "Execute as: Me",
+ * "Who has access: Anyone". Google requires "Anyone" for a non-Google caller;
+ * the SYNC_TOKEN script property is what actually gates it, so set one.
+ *
+ * Body: {"token":"…","month":"2026-09","weeks":4}
+ */
+function doPost(e) {
+  var out = function (obj) {
+    return ContentService.createTextOutput(JSON.stringify(obj))
+      .setMimeType(ContentService.MimeType.JSON);
+  };
+  try {
+    var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    var expected = PropertiesService.getScriptProperties().getProperty('SYNC_TOKEN');
+    if (!expected) return out({ ok: false, error: 'SYNC_TOKEN is not set on the script.' });
+    if (body.token !== expected) return out({ ok: false, error: 'Bad token.' });
+    if (!/^\d{4}-\d{2}$/.test(body.month || '')) return out({ ok: false, error: 'month must be YYYY-MM.' });
+    var n = syncMonth(body.month, Number(body.weeks) || 4);
+    return out({ ok: true, month: body.month, agents: n });
+  } catch (err) {
+    return out({ ok: false, error: String(err) });
+  }
+}
+
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('CX Schedule')
@@ -34,12 +62,13 @@ function cfg_(key) {
 }
 
 /** Supabase REST GET with pagination past the 1000-row cap. */
-function sb_(path, query) {
+function sb_(path, query, singlePage) {
   var base = cfg_('SUPABASE_URL') + '/rest/v1/' + path + '?' + query;
   var key = cfg_('SUPABASE_SERVICE_KEY');
   var out = [];
   var size = 1000;
-  for (var page = 0; page < 100; page++) {
+  var maxPages = singlePage ? 1 : 100;
+  for (var page = 0; page < maxPages; page++) {
     var url = base + '&limit=' + size + '&offset=' + (page * size);
     var res = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
@@ -105,6 +134,46 @@ function listProps() {
   names.forEach(function (k) {
     Logger.log('"' + k + '"  length=' + p[k].length + '  starts="' + p[k].slice(0, 12) + '..."');
   });
+}
+
+/**
+ * Diagnoses an empty sync without writing anything: shows the month/range the
+ * script resolved, how many rows Supabase returns for it, and what the newest
+ * dates in the table actually are. A range mismatch (wrong month, or a timezone
+ * shifting the anchor by a day) shows up immediately here.
+ */
+function probeSchedules() {
+  var tz = Session.getScriptTimeZone();
+  var d = new Date();
+  d.setMonth(d.getMonth() + 1);
+  var month = Utilities.formatDate(d, tz, 'yyyy-MM');
+  var parts = month.split('-');
+  var start = anchorSunday_(Number(parts[0]), Number(parts[1]));
+  var dates = [];
+  for (var i = 0; i < 28; i++) {
+    var x = new Date(start.getTime());
+    x.setDate(x.getDate() + i);
+    dates.push(x);
+  }
+  var from = fmt_(dates[0]);
+  var to = fmt_(dates[dates.length - 1]);
+
+  Logger.log('Script timezone : ' + tz);
+  Logger.log('Today (script)  : ' + Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd'));
+  Logger.log('Month resolved  : ' + month);
+  Logger.log('Range queried   : ' + from + '  ->  ' + to);
+
+  var rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
+  Logger.log('Rows in range   : ' + rows.length);
+  if (rows.length) Logger.log('Sample          : ' + JSON.stringify(rows.slice(0, 3)));
+
+  var latest = sb_('schedules', 'select=date&order=date.desc', true);
+  var seen = {};
+  var distinct = [];
+  for (var j = 0; j < latest.length && distinct.length < 8; j++) {
+    if (!seen[latest[j].date]) { seen[latest[j].date] = 1; distinct.push(latest[j].date); }
+  }
+  Logger.log('Newest dates in DB: ' + JSON.stringify(distinct));
 }
 
 /** Quick credential/connection check that writes nothing. */

@@ -299,19 +299,19 @@ function GridTab() {
                         key={d.toISOString()}
                         className="px-1.5 py-2 font-semibold text-center min-w-[58px] border-b border-white/40 sticky top-0 z-20 backdrop-blur-md"
                         style={{
-                          background: today ? "rgba(82,183,136,0.22)" : "rgba(255,255,255,0.95)",
+                          background: today ? "rgba(82,183,136,0.22)" : "var(--surface-sticky)",
                           boxShadow: today ? "inset 0 -3px 0 #52B788" : undefined,
                         }}
                       >
                         <div
                           className="text-[9px] uppercase"
-                          style={{ color: today ? "#2d7a56" : "#64748b", fontWeight: today ? 700 : 500 }}
+                          style={{ color: today ? "var(--today-ink)" : "var(--text-muted)", fontWeight: today ? 700 : 500 }}
                         >
                           {format(d, "EEE")}
                         </div>
                         <div
                           className="text-sm"
-                          style={{ color: today ? "#2d7a56" : "#1e293b", fontWeight: today ? 800 : 600 }}
+                          style={{ color: today ? "var(--today-ink)" : "var(--text-strong)", fontWeight: today ? 800 : 600 }}
                         >
                           {format(d, "d")}
                         </div>
@@ -694,19 +694,19 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
                         key={d.toISOString()}
                         className="px-1.5 py-2 font-semibold text-center min-w-[52px] border-b border-white/40 sticky top-0 z-20 backdrop-blur-md"
                         style={{
-                          background: today ? "rgba(82,183,136,0.22)" : "rgba(255,255,255,0.95)",
+                          background: today ? "rgba(82,183,136,0.22)" : "var(--surface-sticky)",
                           boxShadow: today ? "inset 0 -3px 0 #52B788" : undefined,
                         }}
                       >
                         <div
                           className="text-[9px] uppercase"
-                          style={{ color: today ? "#2d7a56" : "#64748b", fontWeight: today ? 700 : 500 }}
+                          style={{ color: today ? "var(--today-ink)" : "var(--text-muted)", fontWeight: today ? 700 : 500 }}
                         >
                           {format(d, "EEE")}
                         </div>
                         <div
                           className="text-sm"
-                          style={{ color: today ? "#2d7a56" : "#1e293b", fontWeight: today ? 800 : 600 }}
+                          style={{ color: today ? "var(--today-ink)" : "var(--text-strong)", fontWeight: today ? 800 : 600 }}
                         >
                           {format(d, "d")}
                         </div>
@@ -1870,6 +1870,11 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [preview, setPreview] = useState<GenResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [showPool, setShowPool] = useState(false);
+  // Kept in localStorage, never in the bundle — the token would be public
+  // otherwise, and anyone could trigger a rewrite of the sheet.
+  const [sheetUrl, setSheetUrl] = useState("");
+  const [sheetToken, setSheetToken] = useState("");
+  const [syncing, setSyncing] = useState(false);
 
   const start = useMemo(() => nearestSunday(parseISO(`${month}-01`)), [month]);
   const end = useMemo(() => addDays(start, weeks * 7 - 1), [start, weeks]);
@@ -1889,6 +1894,8 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       } else {
         setGyPool(list.filter((a) => !a.is_lead && GY_DEFAULTS.some((t) => hits(a.name, t))).map((a) => a.id));
       }
+      if (saved?.sheetUrl) setSheetUrl(saved.sheetUrl);
+      if (saved?.sheetToken) setSheetToken(saved.sheetToken);
       if (saved?.fixed) setFixed(saved.fixed);
       else {
         const f: Record<string, string> = {};
@@ -1904,8 +1911,39 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   }, []);
 
   useEffect(() => {
-    if (!loading) localStorage.setItem(CFG_KEY, JSON.stringify({ gyPool, fixed }));
-  }, [gyPool, fixed, loading]);
+    if (!loading) localStorage.setItem(CFG_KEY, JSON.stringify({ gyPool, fixed, sheetUrl, sheetToken }));
+  }, [gyPool, fixed, sheetUrl, sheetToken, loading]);
+
+  /**
+   * Push the month to Google Sheets via the Apps Script web app.
+   * Apps Script 302-redirects to a googleusercontent origin, which some
+   * browsers refuse to expose to fetch — so fall back to a fire-and-forget
+   * no-cors post rather than reporting a false failure.
+   */
+  async function pushToSheet(silent = false) {
+    if (!sheetUrl || !sheetToken) {
+      if (!silent) toast.error("Add the Web App URL and token below first");
+      return;
+    }
+    const payload = JSON.stringify({ token: sheetToken, month, weeks });
+    const opts = { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload };
+    setSyncing(true);
+    try {
+      const res = await fetch(sheetUrl, opts);
+      const j = await res.json();
+      if (j.ok) toast.success(`Sheet updated — ${j.agents} rows for ${j.month}`);
+      else toast.error(`Sheet: ${j.error}`);
+    } catch {
+      try {
+        await fetch(sheetUrl, { ...opts, mode: "no-cors" });
+        toast.message("Sync sent to Sheets — response not readable, check the sheet");
+      } catch {
+        toast.error("Could not reach the Apps Script URL");
+      }
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   const leads = agents.filter((a) => a.is_lead);
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
@@ -1967,6 +2005,8 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         user_email: adminEmail, action: "schedule_generated",
         details: { from, to, weeks, cells: rows.length },
       });
+      // Push straight to Sheets if it's configured; silent when it isn't.
+      await pushToSheet(true);
     } finally {
       setBusy(false);
     }
@@ -2140,6 +2180,43 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             </div>
           </div>
         )}
+      </GlassCard>
+
+      {/* Google Sheet */}
+      <GlassCard className="p-4 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <span className="label-caps text-slate-500">Google Sheet</span>
+          <span className={`text-[11px] font-semibold ${sheetUrl && sheetToken ? "text-emerald-600" : "text-slate-400"}`}>
+            {sheetUrl && sheetToken ? "Connected — syncs on Apply" : "Not connected"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-2">
+          <input
+            value={sheetUrl}
+            onChange={(e) => setSheetUrl(e.target.value.trim())}
+            placeholder="Apps Script Web App URL (…/exec)"
+            className="glass rounded-xl px-3 py-2 text-sm outline-none w-full"
+          />
+          <input
+            type="password"
+            value={sheetToken}
+            onChange={(e) => setSheetToken(e.target.value.trim())}
+            placeholder="Sync token (must match SYNC_TOKEN in the script)"
+            className="glass rounded-xl px-3 py-2 text-sm outline-none w-full"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => pushToSheet(false)}
+            disabled={syncing || !sheetUrl || !sheetToken}
+            className="rounded-xl glass px-3.5 py-2 text-sm font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+          >
+            <UploadIcon size={14} /> {syncing ? "Syncing…" : "Sync now"}
+          </button>
+          <span className="text-[11px] text-slate-500">
+            Stored only in this browser, never in the app bundle.
+          </span>
+        </div>
       </GlassCard>
 
       {/* Actions */}

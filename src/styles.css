@@ -245,6 +245,108 @@
   border-radius: 12px;
 }
 
+/* ===========================================================================
+ * Dark mode
+ *
+ * The UI was built with literal palette utilities (text-slate-500, bg-white/60)
+ * rather than semantic tokens, so dark mode is retrofitted by remapping those
+ * utilities under .dark instead of rewriting ~150 call sites. These rules are
+ * intentionally unlayered so they outrank Tailwind's layered utilities.
+ *
+ * Sticky table headers set their background inline (they interleave with a
+ * "today" highlight), so those read --surface-sticky instead.
+ * ======================================================================== */
+
+:root {
+  --surface-sticky: rgba(255, 255, 255, 0.95);
+  --surface-sticky-soft: rgba(255, 255, 255, 0.85);
+  --text-strong: #1e293b;
+  --text-muted: #64748b;
+  --today-ink: #2d7a56;
+}
+
+.dark {
+  --surface-sticky: rgba(22, 31, 45, 0.95);
+  --surface-sticky-soft: rgba(22, 31, 45, 0.85);
+  --text-strong: #e6edf6;
+  --text-muted: #94a3b8;
+  --today-ink: #6ee7b7;
+}
+
+.dark body {
+  color: #e6edf6;
+  background:
+    radial-gradient(ellipse 120% 55% at 50% -5%, #17342a 0%, #101a24 35%, transparent 65%),
+    #0b1119;
+}
+
+.dark .glass {
+  background: rgba(24, 34, 48, 0.55);
+  backdrop-filter: blur(24px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.38);
+}
+
+/* Text scale: dark surfaces invert the ramp — high slate numbers become light. */
+.dark .text-slate-900 { color: #f2f6fb; }
+.dark .text-slate-800 { color: #e6edf6; }
+.dark .text-slate-700 { color: #d3dded; }
+.dark .text-slate-600 { color: #b3c1d5; }
+.dark .text-slate-500 { color: #94a3b8; }
+.dark .text-slate-400 { color: #7a8798; }
+.dark .text-slate-300 { color: #5d6b7e; }
+
+/* White surfaces become translucent light over the dark background. */
+.dark .bg-white { background-color: #172033; }
+.dark .bg-white\/20 { background-color: rgba(255, 255, 255, 0.04); }
+.dark .bg-white\/30 { background-color: rgba(255, 255, 255, 0.05); }
+.dark .bg-white\/40 { background-color: rgba(255, 255, 255, 0.06); }
+.dark .bg-white\/50 { background-color: rgba(255, 255, 255, 0.07); }
+.dark .bg-white\/55 { background-color: rgba(255, 255, 255, 0.07); }
+.dark .bg-white\/60 { background-color: rgba(255, 255, 255, 0.08); }
+.dark .bg-white\/70 { background-color: rgba(23, 32, 51, 0.80); }
+.dark .bg-white\/80 { background-color: rgba(23, 32, 51, 0.86); }
+.dark .bg-white\/85 { background-color: rgba(23, 32, 51, 0.90); }
+.dark .bg-white\/90 { background-color: rgba(22, 31, 45, 0.93); }
+.dark .bg-white\/95 { background-color: rgba(22, 31, 45, 0.96); }
+.dark .hover\:bg-white\/40:hover { background-color: rgba(255, 255, 255, 0.07); }
+.dark .hover\:bg-white\/60:hover { background-color: rgba(255, 255, 255, 0.09); }
+.dark .hover\:bg-white\/30:hover { background-color: rgba(255, 255, 255, 0.06); }
+.dark .hover\:bg-black\/5:hover { background-color: rgba(255, 255, 255, 0.07); }
+.dark .hover\:bg-black\/\[0\.03\]:hover { background-color: rgba(255, 255, 255, 0.05); }
+
+.dark .bg-slate-100 { background-color: rgba(255, 255, 255, 0.08); }
+.dark .bg-slate-200 { background-color: rgba(255, 255, 255, 0.12); }
+
+.dark .border-slate-100 { border-color: rgba(255, 255, 255, 0.08); }
+.dark .border-slate-200 { border-color: rgba(255, 255, 255, 0.12); }
+.dark .border-white\/40 { border-color: rgba(255, 255, 255, 0.10); }
+.dark .border-white\/30 { border-color: rgba(255, 255, 255, 0.08); }
+.dark .border-black\/5 { border-color: rgba(255, 255, 255, 0.10); }
+
+/* Tinted callouts read as washed-out pastels on dark; deepen them instead. */
+.dark .bg-amber-50 { background-color: rgba(120, 83, 10, 0.25); }
+.dark .border-amber-200 { border-color: rgba(217, 158, 45, 0.35); }
+.dark .text-amber-700, .dark .text-amber-800 { color: #f0c26a; }
+.dark .bg-emerald-50 { background-color: rgba(16, 84, 56, 0.28); }
+.dark .border-emerald-200 { border-color: rgba(52, 168, 122, 0.35); }
+.dark .text-emerald-700 { color: #6fdba6; }
+.dark .bg-violet-50, .dark .bg-violet-50\/40 { background-color: rgba(88, 52, 168, 0.22); }
+.dark .border-violet-100, .dark .border-violet-200 { border-color: rgba(150, 110, 240, 0.30); }
+.dark .text-violet-700, .dark .text-violet-800 { color: #c3aaff; }
+.dark .text-violet-600 { color: #b195ff; }
+.dark .text-violet-500 { color: #a78bfa; }
+
+.dark .skeleton {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.11) 50%, rgba(255,255,255,0.05) 100%);
+  background-size: 400px 100%;
+}
+
+.dark .show-scroll { scrollbar-color: rgba(148,163,184,0.45) transparent; }
+.dark .show-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+.dark .show-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.45); background-clip: padding-box; }
+
 /* Visible thin horizontal scrollbar (overrides the global scrollbar-hide) for wide tables */
 .show-scroll { scrollbar-width: thin !important; scrollbar-color: rgba(100,116,139,0.4) transparent; }
 .show-scroll::-webkit-scrollbar { display: block !important; -webkit-appearance: none; height: 10px; }
