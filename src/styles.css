@@ -303,6 +303,7 @@
   --control-bg: rgba(255,255,255,0.7);
   --control-border: rgba(0,0,0,0.06);
   --control-ink: #334155;
+  --cell-empty: rgba(241,245,249,0.5);
 }
 
 .dark {
@@ -348,6 +349,7 @@
   --control-bg: rgba(255,255,255,0.08);
   --control-border: rgba(255,255,255,0.14);
   --control-ink: #cbd5e1;
+  --cell-empty: rgba(255,255,255,0.04);
 }
 
 .dark body {

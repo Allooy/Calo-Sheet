@@ -104,7 +104,7 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
             <button
               onClick={() => setCursor((c) => subMonths(c, 1))}
               className="w-9 h-9 rounded-full grid place-items-center text-slate-500 hover:text-slate-800 transition-colors"
-              style={{ background: "rgba(0,0,0,0.04)" }}
+              style={{ background: "var(--cell-empty)" }}
             >
               <ChevronLeft size={16} />
             </button>
@@ -112,7 +112,7 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
             <button
               onClick={() => setCursor((c) => addMonths(c, 1))}
               className="w-9 h-9 rounded-full grid place-items-center text-slate-500 hover:text-slate-800 transition-colors"
-              style={{ background: "rgba(0,0,0,0.04)" }}
+              style={{ background: "var(--cell-empty)" }}
             >
               <ChevronRight size={16} />
             </button>
@@ -160,17 +160,20 @@ export function TeammateScheduleModal({ agent, onClose }: { agent: Agent; onClos
                     key={d.toISOString()}
                     className={`relative min-h-[56px] md:min-h-[64px] rounded-2xl p-1.5 flex flex-col ${!inMonth ? "opacity-35" : ""}`}
                     style={{
+                      // s.bg, not a hex-alpha suffix on s.dot: these colors are
+                      // CSS variables now, so string-concatenating an alpha
+                      // produces invalid CSS and the cell loses its fill.
                       background: today
                         ? "linear-gradient(160deg, #61c497, #3d9a70)"
                         : empty
-                          ? "rgba(241,245,249,0.5)"
-                          : `${s.dot}1f`,
+                          ? "var(--cell-empty)"
+                          : s.bg,
                       boxShadow: today ? "0 8px 20px rgba(82,183,136,0.4)" : "none",
                     }}
                   >
                     <div
                       className="text-[11px] font-bold"
-                      style={{ color: today ? "rgba(255,255,255,0.95)" : empty ? "#cbd5e1" : cc }}
+                      style={{ color: today ? "rgba(255,255,255,0.95)" : empty ? "var(--text-muted)" : cc }}
                     >
                       {format(d, "d")}
                     </div>
