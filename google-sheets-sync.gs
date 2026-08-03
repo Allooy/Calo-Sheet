@@ -344,6 +344,11 @@ function syncMonth(month, weeks) {
              '  (' + agents.length + ' agents, ' + rows.length + ' shifts found)');
 
   sh.clear();
+  // Unfreeze before restructuring: a merge that straddles the freeze line is
+  // rejected ("can't merge frozen and non-frozen rows"), and an existing tab
+  // still carries whatever freeze the previous run left behind.
+  sh.setFrozenRows(0);
+  sh.setFrozenColumns(0);
   // clear() does not remove merges — break them or the next write throws
   sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).breakApart();
   var rng = sh.getRange(1, 1, nRows, nCols);
