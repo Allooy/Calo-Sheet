@@ -2212,8 +2212,6 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             browser only until <span className="font-mono">supabase-settings.sql</span> is run.
           </div>
         )}
-        <div className="hidden">
-        </div>
         <div className="flex flex-col gap-2">
           <input
             value={sheetUrl}
@@ -2238,7 +2236,9 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             <UploadIcon size={14} /> {syncing ? "Syncing…" : "Sync now"}
           </button>
           <span className="text-[11px] text-slate-500">
-            Stored only in this browser, never in the app bundle.
+            {cfgError
+              ? "This browser only — run supabase-settings.sql to share it."
+              : "Saved for every admin, on every device."}
           </span>
         </div>
       </GlassCard>
