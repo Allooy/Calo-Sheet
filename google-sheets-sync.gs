@@ -206,8 +206,52 @@ function fmt_(d) {
   return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
+/* ===========================================================================
+ * Formatting, lifted from the August 2026 sheet so every generated month
+ * looks identical to the ones the team already reads.
+ * ======================================================================== */
+
+var FONT_CODE = 'Outfit';      // shift codes + date header
+var FONT_NAME = 'Comfortaa';   // agent names
+var GRID_LINE = '#666666';
+var PAPER     = '#f9f6f6';
+
+// Fill per shift code. Text is white unless TEXT_OVERRIDE says otherwise.
+var CODE_FILL = {
+  'S1': '#ffdab9', 'S2': '#ff9900', 'S3': '#b6d7a8', 'S4': '#dd7e6b',
+  'S5': '#f1c232', 'S5.5': '#6d9eeb', 'S6': '#1155cc',
+  'OFF': '#b04e4e', 'AL': '#d5a6bd', 'SL': '#b19b91', 'DL': '#b19b91',
+  'BIRTHDAY OFF': '#ead1dc', 'PUBLIC HOLIDAY': '#ead1dc',
+  'EID OFF': '#ead1dc', 'TRAINING': '#f3f3f3'
+};
+var TEXT_OVERRIDE = {
+  'BIRTHDAY OFF': '#a64d79', 'PUBLIC HOLIDAY': '#a64d79',
+  'EID OFF': '#a64d79', 'TRAINING': '#434343'
+};
+
+var NAME_LEAD   = { bg: '#e6b8af', fg: '#783f04' }; // shift leads
+var NAME_NORMAL = { bg: '#f3f3f3', fg: '#434343' };
+
+// Legend block printed under the roster, matching the source sheet.
+var LEGEND = [
+  ['S1', '6:00am - 3:00pm'], ['S2', '8:00am - 5:00pm'], ['S3', '10:00am - 7:00pm'],
+  ['S4', '1:00pm - 10:00pm'], ['S5', '3:00pm - 12:00am'], ['S5.5', '8:00pm - 4:00am'],
+  ['S6', '10:30pm - 6:30am'], ['OFF', ''], ['Annual Leave', ''], ['Sick Leave', '']
+];
+var LEGEND_FILL = {
+  'OFF': '#b04e4e', 'Annual Leave': '#d5a6bd', 'Sick Leave': '#b19b91'
+};
+
+function fillFor_(code) {
+  return CODE_FILL[String(code || '').trim().toUpperCase()] || null;
+}
+function inkFor_(code) {
+  return TEXT_OVERRIDE[String(code || '').trim().toUpperCase()] || '#ffffff';
+}
+
 function syncMonth(month, weeks) {
   weeks = weeks || 4;
+  var tz = Session.getScriptTimeZone();
   var parts = month.split('-');
   var start = anchorSunday_(Number(parts[0]), Number(parts[1]));
   // Label from the requested month, never from the anchor Sunday: the anchor
@@ -225,38 +269,105 @@ function syncMonth(month, weeks) {
 
   var agents = sb_('agents', 'select=id,name,is_lead,active&active=eq.true&order=name');
   var rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
-
   var byKey = {};
   for (var j = 0; j < rows.length; j++) {
     byKey[rows[j].agent_id + '|' + rows[j].date] = rows[j].shift_code;
   }
 
-  var header = [Utilities.formatDate(monthFirst, Session.getScriptTimeZone(), 'MMMM')];
+  var nCols = dates.length + 1;
+  var HEADER_ROW = 6;
+  var FIRST_AGENT = 7;
+  var nRows = HEADER_ROW + agents.length + LEGEND.length;
+
+  // Blank canvas, then fill — simpler than tracking every cell individually.
+  var values = [], bgs = [], fgs = [];
+  for (var r = 0; r < nRows; r++) {
+    values.push(new Array(nCols).fill(''));
+    bgs.push(new Array(nCols).fill(null));
+    fgs.push(new Array(nCols).fill('#000000'));
+  }
+
+  // Title + month
+  values[0][1] = 'CX Schedule';
+  values[4][1] = Utilities.formatDate(monthFirst, tz, 'MMM/yyyy');
+  for (var t = 0; t < 5; t++) for (var c = 0; c < nCols; c++) bgs[t][c] = PAPER;
+  fgs[4][1] = '#e06666';
+
+  // Date header
+  values[HEADER_ROW - 1][0] = Utilities.formatDate(monthFirst, tz, 'MMM').toUpperCase();
   for (var k = 0; k < dates.length; k++) {
-    header.push(Utilities.formatDate(dates[k], Session.getScriptTimeZone(), 'EEEE-dd'));
+    values[HEADER_ROW - 1][k + 1] = Utilities.formatDate(dates[k], tz, 'EEEE-dd');
   }
+  for (var c2 = 0; c2 < nCols; c2++) bgs[HEADER_ROW - 1][c2] = PAPER;
 
-  var table = [header];
+  // Agents
   for (var a = 0; a < agents.length; a++) {
-    var line = [agents[a].name];
-    for (var t = 0; t < dates.length; t++) {
-      line.push(byKey[agents[a].id + '|' + fmt_(dates[t])] || '');
+    var row = HEADER_ROW + a;
+    var skin = agents[a].is_lead ? NAME_LEAD : NAME_NORMAL;
+    values[row][0] = agents[a].name;
+    bgs[row][0] = skin.bg;
+    fgs[row][0] = skin.fg;
+    for (var t2 = 0; t2 < dates.length; t2++) {
+      var code = byKey[agents[a].id + '|' + fmt_(dates[t2])] || '';
+      values[row][t2 + 1] = code;
+      if (code) {
+        bgs[row][t2 + 1] = fillFor_(code);
+        fgs[row][t2 + 1] = inkFor_(code);
+      }
     }
-    table.push(line);
   }
 
+  // Legend, with the time repeated once per week the way the source sheet does
+  var legendTop = HEADER_ROW + agents.length;
+  for (var L = 0; L < LEGEND.length; L++) {
+    var lrow = legendTop + L;
+    var label = LEGEND[L][0], time = LEGEND[L][1];
+    values[lrow][0] = label;
+    bgs[lrow][0] = LEGEND_FILL[label] || fillFor_(label) || PAPER;
+    fgs[lrow][0] = bgs[lrow][0] === PAPER ? '#000000' : inkFor_(label);
+    if (time) {
+      for (var w = 0; w < weeks; w++) {
+        values[lrow][w * 7 + 1] = time;
+        fgs[lrow][w * 7 + 1] = '#20124d';
+      }
+    }
+  }
+
+  // ── write ──
   var ss = SpreadsheetApp.openById(SHEET_ID);
-  var title = Utilities.formatDate(monthFirst, Session.getScriptTimeZone(), 'MMMM yyyy');
+  var title = Utilities.formatDate(monthFirst, tz, 'MMMM yyyy');
   var sh = ss.getSheetByName(title) || ss.insertSheet(title);
-  var filled = 0;
-  for (var q = 0; q < rows.length; q++) filled++;
-  Logger.log('Writing tab "' + title + '"  range ' + from + ' → ' + to +
-             '  (' + agents.length + ' agents, ' + filled + ' shifts found)');
+  Logger.log('Writing tab "' + title + '"  range ' + from + ' -> ' + to +
+             '  (' + agents.length + ' agents, ' + rows.length + ' shifts found)');
+
   sh.clear();
-  sh.getRange(1, 1, table.length, header.length).setValues(table);
-  sh.getRange(1, 1, 1, header.length).setFontWeight('bold');
-  sh.setFrozenRows(1);
+  var rng = sh.getRange(1, 1, nRows, nCols);
+  rng.setValues(values).setBackgrounds(bgs).setFontColors(fgs)
+     .setVerticalAlignment('bottom');
+
+  // Typography
+  rng.setFontFamily(FONT_CODE).setFontSize(11).setFontWeight('bold')
+     .setHorizontalAlignment('center');
+  sh.getRange(1, 1, nRows, 1).setFontFamily(FONT_NAME).setHorizontalAlignment('left');
+  sh.getRange(1, 2, 1, nCols - 1).setHorizontalAlignment('center');
+  sh.getRange(1, 2).setFontSize(33);
+  sh.getRange(5, 2).setFontSize(18);
+  sh.getRange(HEADER_ROW, 1, 1, nCols).setFontSize(12);
+  sh.getRange(FIRST_AGENT, 1, agents.length, 1).setFontSize(11);
+  // Legend times read as normal-weight body text, not codes
+  sh.getRange(legendTop + 1, 2, LEGEND.length, nCols - 1)
+    .setFontWeight('normal').setFontColor('#20124d');
+
+  // Grid lines only around the schedule body, as in the source
+  sh.getRange(HEADER_ROW, 1, agents.length + 1, nCols)
+    .setBorder(true, true, true, true, true, true, GRID_LINE, SpreadsheetApp.BorderStyle.SOLID);
+
+  sh.setFrozenRows(HEADER_ROW);
   sh.setFrozenColumns(1);
-  sh.autoResizeColumn(1);
+  sh.setColumnWidth(1, 170);
+  for (var cw = 2; cw <= nCols; cw++) sh.setColumnWidth(cw, 92);
+  sh.setRowHeights(1, nRows, 21);
+  sh.getRange(1, 2).setFontWeight('bold');
+
   return agents.length;
 }
