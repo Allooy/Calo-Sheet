@@ -211,28 +211,33 @@ function fmt_(d) {
  * looks identical to the ones the team already reads.
  * ======================================================================== */
 
-var FONT_CODE = 'Outfit';      // shift codes + date header
-var FONT_NAME = 'Comfortaa';   // agent names
-var GRID_LINE = '#666666';
-var PAPER     = '#f9f6f6';
+var FONT_CODE  = 'Outfit';    // shift codes + date header
+var FONT_NAME  = 'Comfortaa'; // agent names
+var FONT_TITLE = 'Caveat';    // the "CX Schedule" wordmark
+var GRID_LINE  = '#666666';
+var PAPER      = '#f9f6f6';
+var TITLE_INK  = '#b5838d';   // wordmark + date header text
+var MONTH_INK  = '#849ec6';   // "Jun/2026" line
 
-// Fill per shift code. Text is white unless TEXT_OVERRIDE says otherwise.
+// Fill and ink per shift code — the muted June 2026 palette.
 var CODE_FILL = {
-  'S1': '#ffdab9', 'S2': '#ff9900', 'S3': '#b6d7a8', 'S4': '#dd7e6b',
-  'S5': '#f1c232', 'S5.5': '#6d9eeb', 'S6': '#1155cc',
-  'OFF': '#b04e4e', 'AL': '#d5a6bd', 'SL': '#b19b91', 'DL': '#b19b91',
+  'S1': '#b5838d', 'S2': '#f4c2c2', 'S3': '#d8cfc4', 'S4': '#a1b7cd',
+  'S5': '#9a8c98', 'S5.5': '#e9ecef', 'S6': '#7e6e63',
+  'OFF': '#f9f6f6', 'AL': '#d8cfc4', 'SL': '#9faa74', 'DL': '#434343',
   'BIRTHDAY OFF': '#ead1dc', 'PUBLIC HOLIDAY': '#ead1dc',
-  'EID OFF': '#ead1dc', 'TRAINING': '#f3f3f3'
+  'EID OFF': '#ead1dc', 'TRAINING': '#ead1dc'
 };
+// Codes are black on their fill unless listed here.
 var TEXT_OVERRIDE = {
-  'BIRTHDAY OFF': '#a64d79', 'PUBLIC HOLIDAY': '#a64d79',
-  'EID OFF': '#a64d79', 'TRAINING': '#434343'
+  'S2': '#f3f3f3', 'S3': '#ffffff', 'DL': '#eaeef3',
+  'BIRTHDAY OFF': '#a64d79',
+  'PUBLIC HOLIDAY': '#75070c', 'EID OFF': '#75070c', 'TRAINING': '#75070c'
 };
 
 // Name-cell colour encodes job title, matching the source sheet.
-var NAME_LEAD       = { bg: '#e6b8af', fg: '#783f04' }; // CX Shift Lead
-var NAME_SPECIALIST = { bg: '#6d9eeb', fg: '#ffffff' }; // CX Specialist
-var NAME_NORMAL     = { bg: '#f3f3f3', fg: '#434343' }; // CX Agent
+var NAME_LEAD       = { bg: '#d5a6bd', fg: '#000000' }; // CX Shift Lead
+var NAME_SPECIALIST = { bg: '#bde0fe', fg: '#000000' }; // CX Specialist
+var NAME_NORMAL     = { bg: '#f9f6f6', fg: '#b5838d' }; // CX Agent
 
 // Legend block printed under the roster, matching the source sheet.
 var LEGEND = [
@@ -241,14 +246,14 @@ var LEGEND = [
   ['S6', '10:30pm - 6:30am'], ['OFF', ''], ['Annual Leave', ''], ['Sick Leave', '']
 ];
 var LEGEND_FILL = {
-  'OFF': '#b04e4e', 'Annual Leave': '#d5a6bd', 'Sick Leave': '#b19b91'
+  'OFF': '#f9f6f6', 'Annual Leave': '#d8cfc4', 'Sick Leave': '#9faa74'
 };
 
 function fillFor_(code) {
   return CODE_FILL[String(code || '').trim().toUpperCase()] || null;
 }
 function inkFor_(code) {
-  return TEXT_OVERRIDE[String(code || '').trim().toUpperCase()] || '#ffffff';
+  return TEXT_OVERRIDE[String(code || '').trim().toUpperCase()] || '#000000';
 }
 
 function syncMonth(month, weeks) {
@@ -293,14 +298,15 @@ function syncMonth(month, weeks) {
   values[0][1] = 'CX Schedule';
   values[4][1] = Utilities.formatDate(monthFirst, tz, 'MMM/yyyy');
   for (var t = 0; t < 5; t++) for (var c = 0; c < nCols; c++) bgs[t][c] = PAPER;
-  fgs[4][1] = '#e06666';
+  fgs[0][1] = TITLE_INK;
+  fgs[4][1] = MONTH_INK;
 
   // Date header
   values[HEADER_ROW - 1][0] = Utilities.formatDate(monthFirst, tz, 'MMM').toUpperCase();
   for (var k = 0; k < dates.length; k++) {
     values[HEADER_ROW - 1][k + 1] = Utilities.formatDate(dates[k], tz, 'EEEE-dd');
   }
-  for (var c2 = 0; c2 < nCols; c2++) bgs[HEADER_ROW - 1][c2] = PAPER;
+  for (var c2 = 0; c2 < nCols; c2++) { bgs[HEADER_ROW - 1][c2] = PAPER; fgs[HEADER_ROW - 1][c2] = TITLE_INK; }
 
   // Agents
   for (var a = 0; a < agents.length; a++) {
@@ -360,7 +366,7 @@ function syncMonth(month, weeks) {
      .setHorizontalAlignment('center');
   sh.getRange(1, 1, nRows, 1).setFontFamily(FONT_NAME).setHorizontalAlignment('left');
   sh.getRange(1, 2, 1, nCols - 1).setHorizontalAlignment('center');
-  sh.getRange(1, 2).setFontSize(33);
+  sh.getRange(1, 2).setFontSize(47).setFontFamily(FONT_TITLE);
   sh.getRange(5, 2).setFontSize(18);
   sh.getRange(HEADER_ROW, 1, 1, nCols).setFontSize(12);
   sh.getRange(FIRST_AGENT, 1, agents.length, 1).setFontSize(11);
