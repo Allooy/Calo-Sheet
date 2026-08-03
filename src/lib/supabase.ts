@@ -21,6 +21,8 @@ export type Agent = {
   role: Role;
   active: boolean;
   is_lead: boolean;
+  /** CX Specialist — shown as a blue name cell in the exported sheet. */
+  is_specialist: boolean;
   avatar_url: string | null;
   created_at: string;
 };

@@ -229,8 +229,10 @@ var TEXT_OVERRIDE = {
   'EID OFF': '#a64d79', 'TRAINING': '#434343'
 };
 
-var NAME_LEAD   = { bg: '#e6b8af', fg: '#783f04' }; // shift leads
-var NAME_NORMAL = { bg: '#f3f3f3', fg: '#434343' };
+// Name-cell colour encodes job title, matching the source sheet.
+var NAME_LEAD       = { bg: '#e6b8af', fg: '#783f04' }; // CX Shift Lead
+var NAME_SPECIALIST = { bg: '#6d9eeb', fg: '#ffffff' }; // CX Specialist
+var NAME_NORMAL     = { bg: '#f3f3f3', fg: '#434343' }; // CX Agent
 
 // Legend block printed under the roster, matching the source sheet.
 var LEGEND = [
@@ -267,7 +269,7 @@ function syncMonth(month, weeks) {
   var from = fmt_(dates[0]);
   var to = fmt_(dates[dates.length - 1]);
 
-  var agents = sb_('agents', 'select=id,name,is_lead,active&active=eq.true&order=name');
+  var agents = sb_('agents', 'select=id,name,is_lead,is_specialist,active&active=eq.true&order=name');
   var rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
   var byKey = {};
   for (var j = 0; j < rows.length; j++) {
@@ -303,7 +305,8 @@ function syncMonth(month, weeks) {
   // Agents
   for (var a = 0; a < agents.length; a++) {
     var row = HEADER_ROW + a;
-    var skin = agents[a].is_lead ? NAME_LEAD : NAME_NORMAL;
+    var skin = agents[a].is_lead ? NAME_LEAD
+              : (agents[a].is_specialist ? NAME_SPECIALIST : NAME_NORMAL);
     values[row][0] = agents[a].name;
     bgs[row][0] = skin.bg;
     fgs[row][0] = skin.fg;
@@ -341,6 +344,8 @@ function syncMonth(month, weeks) {
              '  (' + agents.length + ' agents, ' + rows.length + ' shifts found)');
 
   sh.clear();
+  // clear() does not remove merges — break them or the next write throws
+  sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).breakApart();
   var rng = sh.getRange(1, 1, nRows, nCols);
   rng.setValues(values).setBackgrounds(bgs).setFontColors(fgs)
      .setVerticalAlignment('bottom');
@@ -361,6 +366,11 @@ function syncMonth(month, weeks) {
   // Grid lines only around the schedule body, as in the source
   sh.getRange(HEADER_ROW, 1, agents.length + 1, nCols)
     .setBorder(true, true, true, true, true, true, GRID_LINE, SpreadsheetApp.BorderStyle.SOLID);
+
+  // Title spans the full width across rows 1-4, month across row 5 (as in the source)
+  sh.getRange(1, 1, 4, 1).merge();
+  sh.getRange(1, 2, 4, nCols - 1).merge().setVerticalAlignment('middle');
+  sh.getRange(5, 2, 1, nCols - 1).merge();
 
   sh.setFrozenRows(HEADER_ROW);
   sh.setFrozenColumns(1);

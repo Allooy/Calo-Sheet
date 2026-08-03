@@ -27,6 +27,7 @@ import {
   Trash2,
   ImagePlus,
   Sparkles,
+  Star,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GlassCard } from "@/components/GlassCard";
@@ -1480,6 +1481,17 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     URL.revokeObjectURL(url);
   }
 
+  async function toggleSpecialist(a: Agent) {
+    const { error } = await supabase
+      .from("agents").update({ is_specialist: !a.is_specialist }).eq("id", a.id);
+    if (error) return toast.error(error.message);
+    setAgents((arr) => arr.map((x) => (x.id === a.id ? { ...x, is_specialist: !a.is_specialist } : x)));
+    await supabase.from("audit_log").insert({
+      user_email: adminEmail, action: "agent_specialist_toggled",
+      details: { id: a.id, is_specialist: !a.is_specialist },
+    });
+  }
+
   async function toggleLead(a: Agent) {
     const { error } = await supabase.from("agents").update({ is_lead: !a.is_lead }).eq("id", a.id);
     if (error) return toast.error(error.message);
@@ -1531,6 +1543,14 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
                 style={a.is_lead ? { background: "#fde68a", color: "#92400e" } : { color: "#cbd5e1" }}
               >
                 <Crown size={15} strokeWidth={2.4} fill={a.is_lead ? "currentColor" : "none"} />
+              </button>
+              <button
+                onClick={() => toggleSpecialist(a)}
+                title={a.is_specialist ? "Remove CX Specialist" : "Make CX Specialist"}
+                className="w-8 h-8 rounded-full grid place-items-center transition-colors shrink-0 hover:bg-blue-50"
+                style={a.is_specialist ? { background: "#6d9eeb", color: "#fff" } : { color: "#cbd5e1" }}
+              >
+                <Star size={15} strokeWidth={2.4} fill={a.is_specialist ? "currentColor" : "none"} />
               </button>
               <span
                 className={`hidden sm:inline text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-0.5 ${
