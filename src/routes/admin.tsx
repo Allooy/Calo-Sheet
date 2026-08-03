@@ -48,6 +48,7 @@ import {
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
 import { generateSchedule, type GenResult } from "@/lib/generator";
+import { loadSetting, saveSetting, readCached } from "@/lib/settings";
 
 const TABS = [
   { key: "overview", label: "Overview" },
@@ -1815,6 +1816,12 @@ const FIXED_DEFAULTS: Array<[string[], string]> = [
   [["reem", "alraddia"], "S2"],
 ];
 const CFG_KEY = "cx-automation-config";
+type AutoConfig = {
+  gyPool?: string[];
+  fixed?: Record<string, string>;
+  sheetUrl?: string;
+  sheetToken?: string;
+};
 
 const nrm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
 const hits = (name: string, toks: string[]) => toks.every((t) => nrm(name).includes(t));
@@ -1875,6 +1882,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [sheetUrl, setSheetUrl] = useState("");
   const [sheetToken, setSheetToken] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [cfgError, setCfgError] = useState<string | null>(null);
 
   const start = useMemo(() => nearestSunday(parseISO(`${month}-01`)), [month]);
   const end = useMemo(() => addDays(start, weeks * 7 - 1), [start, weeks]);
@@ -1886,9 +1894,11 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       if (cancel) return;
       const list = (data as Agent[] | null) ?? [];
       setAgents(list);
-      const saved = (() => {
-        try { return JSON.parse(localStorage.getItem(CFG_KEY) ?? "null"); } catch { return null; }
-      })();
+      // Database first (shared by every admin, on every device); the cached
+      // copy only covers the first paint and the not-yet-migrated case.
+      const saved =
+        (await loadSetting<AutoConfig>(CFG_KEY)) ?? readCached<AutoConfig>(CFG_KEY);
+      if (cancel) return;
       if (saved?.gyPool?.length) {
         setGyPool(saved.gyPool.filter((id: string) => list.some((a) => a.id === id)));
       } else {
@@ -1910,8 +1920,14 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     return () => { cancel = true; };
   }, []);
 
+  // Persist to Supabase, debounced so typing a URL doesn't write on every key.
   useEffect(() => {
-    if (!loading) localStorage.setItem(CFG_KEY, JSON.stringify({ gyPool, fixed, sheetUrl, sheetToken }));
+    if (loading) return;
+    const t = setTimeout(async () => {
+      const err = await saveSetting(CFG_KEY, { gyPool, fixed, sheetUrl, sheetToken });
+      setCfgError(err);
+    }, 800);
+    return () => clearTimeout(t);
   }, [gyPool, fixed, sheetUrl, sheetToken, loading]);
 
   /**
@@ -2189,6 +2205,14 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           <span className={`text-[11px] font-semibold ${sheetUrl && sheetToken ? "text-emerald-600" : "text-slate-400"}`}>
             {sheetUrl && sheetToken ? "Connected — syncs on Apply" : "Not connected"}
           </span>
+        </div>
+        {cfgError && (
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+            Settings aren't saving to the database ({cfgError}). They'll persist in this
+            browser only until <span className="font-mono">supabase-settings.sql</span> is run.
+          </div>
+        )}
+        <div className="hidden">
         </div>
         <div className="flex flex-col gap-2">
           <input
