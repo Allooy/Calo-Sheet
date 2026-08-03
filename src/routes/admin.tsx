@@ -2000,17 +2000,14 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           if (!/^S[0-9.]+$/.test(c) && c !== "OFF") leave[`${r.agent_id}|${r.date}`] = r.shift_code;
         }
       }
-      // Rotation offset rotates who holds which off-pattern, so two months in a
-      // row don't hand the same person the same days off.
-      const ordered = [...agents].sort((a, b) => a.name.localeCompare(b.name));
-      const rotated = offset ? [...ordered.slice(offset % ordered.length), ...ordered.slice(0, offset % ordered.length)] : ordered;
       const res = generateSchedule({
-        agents: rotated.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+        agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
         startSunday: from,
         weeks,
         gyPool,
         fixedShift: fixed,
         leave,
+        offset,
       });
       setPreview(res);
       if (res.warnings.length) toast.warning(`${res.warnings.length} rule warning(s)`);

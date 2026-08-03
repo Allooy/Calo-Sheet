@@ -47,6 +47,12 @@ export type GenInput = {
   gyPool: string[]; // agent ids eligible for graveyard
   fixedShift?: Record<string, string>; // agentId -> code that never rotates
   leave?: Record<string, string>; // `${agentId}|${date}` -> AL / SL / ...
+  /**
+   * Rotates which agent holds which off-pattern, so consecutive months don't
+   * hand the same people the same days off. Must be applied *after* the
+   * internal sort, or that sort discards it.
+   */
+  offset?: number;
 };
 
 export type GenCell = { agent_id: string; date: string; shift_code: string };
@@ -140,7 +146,14 @@ export function generateSchedule(input: GenInput): GenResult {
   const gyPool = new Set(input.gyPool);
   for (const a of agents) if (a.is_lead) gyPool.delete(a.id);
 
-  const sorted = [...agents].sort((x, y) => x.name.localeCompare(y.name));
+  // Sort for determinism, then rotate. Off-patterns are handed out by position
+  // in this list, so rotating it moves who gets the weekend off without
+  // changing the overall coverage shape.
+  const byName = [...agents].sort((x, y) => x.name.localeCompare(y.name));
+  const rot = byName.length
+    ? ((((input.offset ?? 0) % byName.length) + byName.length) % byName.length)
+    : 0;
+  const sorted = rot ? byName.slice(rot).concat(byName.slice(0, rot)) : byName;
   const pair = assignPairs(sorted, gyPool);
   const poolAgents = sorted.filter((a) => gyPool.has(a.id));
   if (poolAgents.length < GY_PER_WEEK) {
