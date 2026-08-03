@@ -35,6 +35,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const items = ITEMS.filter((i) => (!i.admin || isAdmin) && (!i.agentOnly || !isAdmin));
   const title = TITLES[pathname] ?? "CX Workforce";
   const [scrolled, setScrolled] = useState(false);
+  // Bottom nav condenses while scrolling down and returns on the way up, so it
+  // stays reachable without covering content.
+  const [navTight, setNavTight] = useState(false);
 
   // Per-page browser tab title.
   useEffect(() => {
@@ -42,7 +45,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [title]);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 6);
+    let lastY = window.scrollY;
+    const onScroll = () => {
+      const y = window.scrollY;
+      setScrolled(y > 6);
+      // Ignore jitter and the rubber-band region, or the nav flickers.
+      if (Math.abs(y - lastY) > 6 && y > 0) {
+        setNavTight(y > lastY && y > 40);
+        lastY = y;
+      }
+    };
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -106,7 +118,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       cancelAnimationFrame(id);
       window.removeEventListener("resize", onResize);
     };
-  }, [activeIndex, items.length]);
+  }, [activeIndex, items.length, navTight]);
 
   return (
     <div className="min-h-[100dvh] w-full">
@@ -197,8 +209,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <nav
         ref={navRef}
-        className="md:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 inline-flex items-center p-1.5 rounded-full"
+        className={`md:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 inline-flex items-center rounded-full ${
+          navTight ? "p-1" : "p-1.5"
+        }`}
         style={{
+          transition: "padding 0.28s cubic-bezier(0.22,1,0.36,1)",
           background: "var(--nav-bg)",
           backdropFilter: "blur(28px) saturate(125%)",
           WebkitBackdropFilter: "blur(28px) saturate(125%)",
@@ -229,7 +244,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               to={to}
               aria-label={label}
               ref={(el) => { itemRefs.current[i] = el; }}
-              className={`relative z-10 flex items-center justify-center h-11 ${isSchedule ? "w-[86px]" : "w-[72px]"} rounded-full active:scale-90 transition-transform duration-200`}
+              className={`relative z-10 flex items-center justify-center rounded-full active:scale-90 ${
+                navTight ? "h-9" : "h-11"
+              } ${
+                navTight
+                  ? (isSchedule ? "w-[74px]" : "w-[60px]")
+                  : (isSchedule ? "w-[86px]" : "w-[72px]")
+              }`}
+              style={{ transition: "height 0.28s cubic-bezier(0.22,1,0.36,1), width 0.28s cubic-bezier(0.22,1,0.36,1), transform 0.2s" }}
             >
               <Icon
                 size={19}

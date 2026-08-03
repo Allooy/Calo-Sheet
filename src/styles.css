@@ -161,14 +161,19 @@
     /* Kills the iOS rubber-band. Without it the page drags past its content and
        exposes the body background behind full-bleed screens like the login. */
     overscroll-behavior: none;
+    /* The page background lives here, not on body: anything outside body — the
+       safe areas and the strip behind the browser chrome — paints from the root
+       element, which is what was showing through as a dark band. */
+    background:
+      radial-gradient(ellipse 120% 55% at 50% -5%, #c2e8d8 0%, #e8f4f0 35%, transparent 65%),
+      #ffffff;
+    min-height: 100dvh;
   }
 
   body {
     color: #1a1a2e;
     font-family: var(--font-sans);
-    background:
-      radial-gradient(ellipse 120% 55% at 50% -5%, #c2e8d8 0%, #e8f4f0 35%, transparent 65%),
-      #ffffff;
+    background: transparent;
     /* dvh, not vh: on iOS 100vh is the *expanded* viewport, so it stays taller
        than the visible area while the URL bar is showing and the page scrolls
        when there is nothing to scroll. */
@@ -365,11 +370,15 @@
   --cell-empty: rgba(255,255,255,0.04);
 }
 
-.dark body {
-  color: #e6edf6;
+html.dark {
   background:
     radial-gradient(ellipse 120% 55% at 50% -5%, #17342a 0%, #101a24 35%, transparent 65%),
     #0b1119;
+}
+
+.dark body {
+  color: #e6edf6;
+  background: transparent;
 }
 
 .dark .glass {
