@@ -239,6 +239,13 @@ var NAME_LEAD       = { bg: '#d5a6bd', fg: '#000000' }; // CX Shift Lead
 var NAME_SPECIALIST = { bg: '#bde0fe', fg: '#000000' }; // CX Specialist
 var NAME_NORMAL     = { bg: '#f9f6f6', fg: '#b5838d' }; // CX Agent
 
+// Daily headcount printed under the roster, so cover can be read per column.
+var SUMMARY = [
+  { label: 'Morning',   codes: ['S1', 'S2', 'S3'],   bg: '#b5838d' },
+  { label: 'Evening',   codes: ['S4', 'S5', 'S5.5'], bg: '#a1b7cd' },
+  { label: 'Graveyard', codes: ['S6'],               bg: '#7e6e63' }
+];
+
 // Legend block printed under the roster, matching the source sheet.
 var LEGEND = [
   ['S1', '6:00am - 3:00pm'], ['S2', '8:00am - 5:00pm'], ['S3', '10:00am - 7:00pm'],
@@ -284,7 +291,7 @@ function syncMonth(month, weeks) {
   var nCols = dates.length + 1;
   var HEADER_ROW = 6;
   var FIRST_AGENT = 7;
-  var nRows = HEADER_ROW + agents.length + LEGEND.length;
+  var nRows = HEADER_ROW + agents.length + SUMMARY.length + LEGEND.length;
 
   // Blank canvas, then fill — simpler than tracking every cell individually.
   var values = [], bgs = [], fgs = [];
@@ -326,8 +333,27 @@ function syncMonth(month, weeks) {
     }
   }
 
+  // Daily headcount per band, read straight down each date column.
+  var summaryTop = HEADER_ROW + agents.length;
+  for (var S = 0; S < SUMMARY.length; S++) {
+    var srow = summaryTop + S;
+    values[srow][0] = SUMMARY[S].label;
+    bgs[srow][0] = SUMMARY[S].bg;
+    fgs[srow][0] = '#ffffff';
+    for (var t3 = 0; t3 < dates.length; t3++) {
+      var n = 0;
+      for (var a3 = 0; a3 < agents.length; a3++) {
+        var cd = String(values[HEADER_ROW + a3][t3 + 1] || '').trim().toUpperCase();
+        if (SUMMARY[S].codes.indexOf(cd) >= 0) n++;
+      }
+      values[srow][t3 + 1] = n;
+      bgs[srow][t3 + 1] = PAPER;
+      fgs[srow][t3 + 1] = '#000000';
+    }
+  }
+
   // Legend, with the time repeated once per week the way the source sheet does
-  var legendTop = HEADER_ROW + agents.length;
+  var legendTop = summaryTop + SUMMARY.length;
   for (var L = 0; L < LEGEND.length; L++) {
     var lrow = legendTop + L;
     var label = LEGEND[L][0], time = LEGEND[L][1];
@@ -375,7 +401,7 @@ function syncMonth(month, weeks) {
     .setFontWeight('normal').setFontColor('#20124d');
 
   // Grid lines only around the schedule body, as in the source
-  sh.getRange(HEADER_ROW, 1, agents.length + 1, nCols)
+  sh.getRange(HEADER_ROW, 1, agents.length + SUMMARY.length + 1, nCols)
     .setBorder(true, true, true, true, true, true, GRID_LINE, SpreadsheetApp.BorderStyle.SOLID);
 
   // Title spans the full width across rows 1-4, month across row 5 (as in the source)
