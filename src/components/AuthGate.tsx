@@ -7,7 +7,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const { ready, session, agent } = useAuth();
   if (!ready) {
     return (
-      <div className="min-h-screen grid place-items-center p-6">
+      <div className="min-h-[100dvh] grid place-items-center p-6">
         <Skeleton className="w-48 h-12" />
       </div>
     );
@@ -15,7 +15,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (!session) return <Login />;
   if (!agent) {
     return (
-      <div className="min-h-screen grid place-items-center p-6 text-center">
+      <div className="min-h-[100dvh] grid place-items-center p-6 text-center">
         <div className="glass rounded-2xl p-8 max-w-sm">
           <div className="text-base font-bold mb-2">Account not provisioned</div>
           <p className="text-sm text-slate-600">

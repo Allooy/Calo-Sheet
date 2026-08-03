@@ -109,7 +109,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [activeIndex, items.length]);
 
   return (
-    <div className="min-h-screen w-full">
+    <div className="min-h-[100dvh] w-full">
       <aside className="hidden md:flex fixed top-3 left-3 bottom-3 flex-col group/sb transition-[width] duration-300 ease-out w-16 hover:w-[220px] glass rounded-3xl overflow-hidden z-30 will-change-[width]">
         <div className="px-4 pt-5 pb-4 flex items-center gap-2">
           <img src="/calologo.avif" alt="Calo" className="w-8 h-8 object-contain shrink-0" />
@@ -144,7 +144,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      <div className="min-w-0 flex flex-col min-h-screen">
+      <div className="min-w-0 flex flex-col min-h-[100dvh]">
         <header
           className="sticky top-0 z-20 px-4 md:px-8 md:pl-[88px] pt-4 pb-3 flex items-center justify-between transition-all duration-300"
           style={

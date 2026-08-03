@@ -45,7 +45,7 @@ export function Login() {
 
   return (
     <div
-      className="min-h-screen w-full relative overflow-hidden grid place-items-center p-5"
+      className="min-h-[100dvh] w-full relative overflow-hidden grid place-items-center p-5"
       style={{ background: "linear-gradient(150deg, #123828 0%, #1a4a30 48%, #0c2417 100%)" }}
     >
       {/* aurora wash */}
