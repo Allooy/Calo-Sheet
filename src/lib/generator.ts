@@ -413,6 +413,21 @@ function kind3(k: string[]): string[][] {
   return out;
 }
 
+/**
+ * Re-check an arbitrary set of cells — used to re-run the rule check after an
+ * admin hand-edits the preview, so the warnings reflect what will actually be
+ * applied rather than what was generated.
+ */
+export function auditSchedule(
+  cells: GenCell[], dates: string[], agents: GenAgent[],
+): { stats: GenStats; warnings: string[] } {
+  const none = new Set<string>();
+  return {
+    stats: buildStats(cells, dates, agents, none),
+    warnings: verify(cells, dates, agents, none),
+  };
+}
+
 function buildStats(cells: GenCell[], dates: string[], agents: GenAgent[], gyPool: Set<string>): GenStats {
   const byDate = new Map<string, GenCell[]>();
   for (const c of cells) {

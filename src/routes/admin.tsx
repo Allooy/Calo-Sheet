@@ -48,7 +48,7 @@ import {
 } from "@/lib/supabase";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
-import { generateSchedule, type GenResult } from "@/lib/generator";
+import { generateSchedule, auditSchedule, type GenResult } from "@/lib/generator";
 import { loadSetting, saveSetting, readCached } from "@/lib/settings";
 
 const TABS = [
@@ -1904,6 +1904,10 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [sheetToken, setSheetToken] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [cfgError, setCfgError] = useState<string | null>(null);
+  // Hand-edits layered over the preview: `${agentId}|${date}` -> code
+  const [edits, setEdits] = useState<Map<string, string>>(new Map());
+  const previewScroll = useRef<HTMLDivElement>(null);
+  useDragScroll(previewScroll);
 
   const start = useMemo(() => nearestSunday(parseISO(`${month}-01`)), [month]);
   const end = useMemo(() => addDays(start, weeks * 7 - 1), [start, weeks]);
@@ -1988,6 +1992,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   async function runPreview() {
     setBusy(true);
     setPreview(null);
+    setEdits(new Map());
     try {
       const from = format(start, "yyyy-MM-dd");
       const to = format(end, "yyyy-MM-dd");
@@ -2029,6 +2034,40 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     }
   }
 
+  // What will actually be written: the generated cells with any hand-edits on
+  // top. The rule check re-runs against this, not the pristine generation.
+  const effective = useMemo(
+    () =>
+      preview
+        ? preview.cells.map((c) => ({
+            ...c,
+            shift_code: edits.get(`${c.agent_id}|${c.date}`) ?? c.shift_code,
+          }))
+        : [],
+    [preview, edits],
+  );
+  const audit = useMemo(
+    () =>
+      preview
+        ? auditSchedule(
+            effective,
+            preview.dates,
+            agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+          )
+        : null,
+    [effective, preview, agents],
+  );
+
+  function setCell(agentId: string, date: string, code: string) {
+    setEdits((m) => {
+      const n = new Map(m);
+      const orig = preview?.cells.find((c) => c.agent_id === agentId && c.date === date);
+      if (orig && orig.shift_code === code) n.delete(`${agentId}|${date}`);
+      else n.set(`${agentId}|${date}`, code);
+      return n;
+    });
+  }
+
   async function apply() {
     if (!preview) return;
     if (!confirm(`Replace the schedule for ${agents.length} agents from ${format(start, "MMM d")} to ${format(end, "MMM d, yyyy")}?`)) return;
@@ -2040,7 +2079,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       const { error: delErr } = await supabase
         .from("schedules").delete().gte("date", from).lte("date", to).in("agent_id", ids);
       if (delErr) { toast.error(delErr.message); return; }
-      const rows = preview.cells.map((c) => ({ agent_id: c.agent_id, date: c.date, shift_code: c.shift_code }));
+      const rows = effective.map((c) => ({ agent_id: c.agent_id, date: c.date, shift_code: c.shift_code }));
       for (let i = 0; i < rows.length; i += 500) {
         const { error } = await supabase.from("schedules").insert(rows.slice(i, i + 500));
         if (error) { toast.error(error.message); return; }
@@ -2048,7 +2087,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       toast.success(`Applied ${rows.length} shifts`);
       await supabase.from("audit_log").insert({
         user_email: adminEmail, action: "schedule_generated",
-        details: { from, to, weeks, cells: rows.length },
+        details: { from, to, weeks, cells: rows.length, manualEdits: edits.size },
       });
       // Push straight to Sheets if it's configured; silent when it isn't.
       await pushToSheet(true);
@@ -2075,7 +2114,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     URL.revokeObjectURL(url);
   }
 
-  const s = preview?.stats;
+  const s = audit?.stats;
   const rng = (a: number[]) => `${Math.min(...a)}–${Math.max(...a)}`;
   const onlyKey = (o: Record<number, number>, k: number) => Object.keys(o).every((x) => +x === k);
 
@@ -2315,7 +2354,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             <StatChip label="Graveyard / day" value={rng(s.gyPerDay)} good={Math.min(...s.gyPerDay) >= 2} />
             <StatChip label="Leads morning" value={rng(s.morningLeadsPerDay)} good={Math.min(...s.morningLeadsPerDay) >= 2} />
             <StatChip label="Leads evening" value={rng(s.eveningLeadsPerDay)} good={Math.min(...s.eveningLeadsPerDay) >= 2} />
-            <StatChip label="Shifts" value={String(preview.cells.length)} good />
+            <StatChip label="Shifts" value={String(effective.length)} good />
           </div>
 
           <div className="label-caps text-slate-500 mt-1">Off per weekday</div>
@@ -2333,9 +2372,97 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             ))}
           </div>
 
-          {preview.warnings.length > 0 && (
+          <div className="flex items-center justify-between pt-1">
+            <span className="label-caps text-slate-500">Edit before applying</span>
+            {edits.size > 0 && (
+              <button
+                onClick={() => setEdits(new Map())}
+                className="text-[11px] font-semibold text-violet-600 flex items-center gap-1"
+              >
+                <Undo2 size={12} /> Reset {edits.size} edit{edits.size === 1 ? "" : "s"}
+              </button>
+            )}
+          </div>
+          <div className="text-[11px] text-slate-500 -mt-2">
+            Change any cell — set someone OFF or AL to pull them out of a week, or give
+            them a shift to add them. The rule check above updates as you edit.
+          </div>
+          <div ref={previewScroll} className="overflow-auto show-scroll max-h-[60vh] rounded-xl">
+            <table className="text-xs border-collapse min-w-full">
+              <thead>
+                <tr>
+                  <th
+                    className="sticky left-0 top-0 z-30 backdrop-blur-md text-left px-2 py-2 font-semibold text-slate-700"
+                    style={{ background: "var(--surface-sticky)", minWidth: 150 }}
+                  >
+                    Agent
+                  </th>
+                  {preview.dates.map((d) => {
+                    const dd = parseISO(d);
+                    return (
+                      <th
+                        key={d}
+                        className="px-1 py-2 font-semibold text-center min-w-[46px] sticky top-0 z-20 backdrop-blur-md"
+                        style={{ background: "var(--surface-sticky)" }}
+                      >
+                        <div className="text-[9px] uppercase" style={{ color: "var(--text-muted)" }}>
+                          {format(dd, "EEE")}
+                        </div>
+                        <div className="text-[11px]" style={{ color: "var(--text-strong)" }}>
+                          {format(dd, "d")}
+                        </div>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {agents.map((a) => (
+                  <tr key={a.id}>
+                    <td
+                      className="sticky left-0 z-10 backdrop-blur-md px-2 py-1 truncate"
+                      style={{ background: "var(--surface-sticky-soft)", minWidth: 150, maxWidth: 150 }}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {a.is_lead && <Crown size={11} className="text-amber-500 shrink-0" />}
+                        <span className="truncate">{a.name}</span>
+                      </span>
+                    </td>
+                    {preview.dates.map((d) => {
+                      const key = `${a.id}|${d}`;
+                      const code = edits.get(key)
+                        ?? preview.cells.find((c) => c.agent_id === a.id && c.date === d)?.shift_code
+                        ?? "";
+                      const st = codeStyle(code);
+                      const changed = edits.has(key);
+                      return (
+                        <td key={d} className="p-0.5 text-center">
+                          <select
+                            value={code}
+                            onChange={(e) => setCell(a.id, d, e.target.value)}
+                            className="appearance-none w-full rounded-md px-0.5 py-1 text-[10px] font-bold uppercase cursor-pointer outline-none text-center"
+                            style={{
+                              background: st.bg,
+                              color: st.text,
+                              boxShadow: changed ? `inset 0 0 0 2px ${st.dot}` : "none",
+                            }}
+                          >
+                            {ALL_SHIFT_CODES.map((c) => (
+                              <option key={c} value={c}>{shortCode(c)}</option>
+                            ))}
+                          </select>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {(audit?.warnings.length ?? 0) > 0 && (
             <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 flex flex-col gap-1">
-              {preview.warnings.map((w) => (
+              {audit!.warnings.map((w) => (
                 <div key={w} className="text-[11px] text-amber-800">• {w}</div>
               ))}
             </div>
