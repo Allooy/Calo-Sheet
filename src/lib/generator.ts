@@ -275,29 +275,21 @@ export function generateSchedule(input: GenInput): GenResult {
   const rotators = sorted.filter((a) => !a.is_lead);
   const rotIndex = new Map<string, number>();
   rotators.forEach((a, i) => rotIndex.set(a.id, i));
-  // Separate index over *all* agents for code selection. Reusing rotIndex here
-  // would correlate the pick with the band's own parity and pin every evening
-  // block to a single code.
-  const idxOf = new Map<string, number>();
-  sorted.forEach((a, i) => idxOf.set(a.id, i));
 
   const dates: string[] = [];
   const totalDays = weeks * 7;
   for (let i = 0; i < totalDays; i++) dates.push(format(addDays(start, i), "yyyy-MM-dd"));
 
   const cells: GenCell[] = [];
-  // Counters rather than a hash: a hash's low bit stays correlated with the
-  // band parity, which pins every evening block to one code.
-  const mCount = new Map<string, number>();
-  const eCount = new Map<string, number>();
 
+  // Pass 1 — band per agent per day. Bands are decided per work block, so a
+  // block never mixes morning with evening. That is the rule that matters; the
+  // exact code may still move within a band (S1 -> S2), as the real sheets do.
+  const bandByDay = new Map<string, Array<Band | null>>();
+  const seedCode = new Map<string, string>();
   for (const a of sorted) {
     const p = pair.get(a.id) ?? 0;
     const isOff = (i: number) => pairCovers(p, i % 7);
-
-    // Work blocks are maximal runs of non-off days. Assigning the code per
-    // block — not per calendar week — is what stops a block that straddles
-    // Sunday from reading S1 S1 S1 S5 S5.
     const blocks: Array<{ start: number; end: number }> = [];
     for (let i = 0; i < totalDays; ) {
       if (isOff(i)) { i++; continue; }
@@ -306,54 +298,77 @@ export function generateSchedule(input: GenInput): GenResult {
       blocks.push({ start: i, end: j - 1 });
       i = j;
     }
-
     const carried = carriedBy.get(a.id);
-    let lastBand: Band | null = carried?.band ?? null;
-    if (lastBand == null) {
-      // No history: seed so the two lead halves open on opposite bands, which
-      // is what keeps 2-3 leads on each of morning and evening every day.
-      lastBand = a.is_lead
-        ? ((leadGroup.get(a.id) ?? 0) === 0 ? "E" : "M")
-        : ((rotIndex.get(a.id) ?? 0) % 2 === 0 ? "E" : "M");
-    }
-
-    const codeByDay = new Array<string>(totalDays);
-    blocks.forEach((b, bi) => {
+    const bands = new Array<Band | null>(totalDays).fill(null);
+    blocks.forEach((blk, bi) => {
       let band: Band;
-      let code: string;
-      // A block already running on the 1st keeps the code it started with.
-      if (bi === 0 && b.start === 0 && carried?.midBlock && carried.code) {
-        band = carried.band ?? "M";
-        code = carried.code;
+      if (bi === 0 && blk.start === 0 && carried?.midBlock && carried.band) {
+        band = carried.band; // finish the run that was already under way
+        if (carried.code) seedCode.set(a.id, carried.code);
+      } else if (gyIds.has(a.id)) {
+        band = "G";
+      } else if (a.is_lead) {
+        band = leadMorning.has(a.id) ? "M" : "E";
       } else {
-        if (gyIds.has(a.id)) band = "G";
-        else if (a.is_lead) band = leadMorning.has(a.id) ? "M" : "E";
-        else {
-          const group = (rotIndex.get(a.id) ?? 0) % 2;
-          band = (Math.floor(b.start / 7) + group) % 2 === 0 ? "M" : "E";
-        }
-        if (band === "G") code = GY_CODE;
-        else {
-          const mix = band === "M" ? MORNING_MIX : EVENING_MIX;
-          const counter = band === "M" ? mCount : eCount;
-          const n = counter.get(a.id) ?? 0;
-          code = mix[((idxOf.get(a.id) ?? 0) + n) % mix.length];
-          counter.set(a.id, n + 1);
-        }
+        const group = (rotIndex.get(a.id) ?? 0) % 2;
+        band = (Math.floor(blk.start / 7) + group) % 2 === 0 ? "M" : "E";
       }
-      const fixed = fixedShift[a.id];
-      if (fixed) code = fixed;
-      for (let d = b.start; d <= b.end; d++) codeByDay[d] = code;
-      lastBand = band;
+      for (let d = blk.start; d <= blk.end; d++) bands[d] = band;
     });
+    bandByDay.set(a.id, bands);
+  }
 
+  // Pass 2 — pick the code inside each band, day by day, so the team's mix stays
+  // balanced instead of a whole block locking one code and swinging the daily
+  // headcount. Yesterday's code is kept whenever the quota allows, so a block
+  // usually reads as one code and only moves within its band when needed.
+  const codeAt = new Map<string, string>();
+  const lastCode = new Map<string, string>(seedCode);
+  for (let d = 0; d < totalDays; d++) {
+    for (const band of ["M", "E"] as const) {
+      const mix = band === "M" ? MORNING_MIX : EVENING_MIX;
+      const uniq = [...new Set(mix)];
+      const pool = sorted.filter(
+        (a) => bandByDay.get(a.id)![d] === band && !fixedShift[a.id] && !leave[`${a.id}|${dates[d]}`],
+      );
+      const quota: Record<string, number> = {};
+      let used = 0;
+      uniq.forEach((c, i) => {
+        const share = mix.filter((x) => x === c).length / mix.length;
+        quota[c] = i === uniq.length - 1 ? pool.length - used : Math.round(share * pool.length);
+        used += quota[c];
+      });
+      const pending: string[] = [];
+      for (const a of pool) {
+        const pc = lastCode.get(a.id);
+        if (pc && quota[pc] > 0) { codeAt.set(`${a.id}|${d}`, pc); quota[pc]--; }
+        else pending.push(a.id);
+      }
+      for (const id of pending) {
+        const c = uniq.find((x) => quota[x] > 0) ?? uniq[0];
+        codeAt.set(`${id}|${d}`, c);
+        quota[c]--;
+      }
+    }
+    for (const a of sorted) {
+      const c = codeAt.get(`${a.id}|${d}`);
+      if (c) lastCode.set(a.id, c);
+    }
+  }
+
+  // Pass 3 — emit.
+  for (const a of sorted) {
+    const p = pair.get(a.id) ?? 0;
+    const bands = bandByDay.get(a.id)!;
     for (let d = 0; d < totalDays; d++) {
       const date = dates[d];
       const lv = leave[`${a.id}|${date}`];
       let code: string;
       if (lv) code = lv; // leave overrides everything, matching how the sheets read
-      else if (isOff(d)) code = "OFF";
-      else code = codeByDay[d];
+      else if (pairCovers(p, d % 7)) code = "OFF";
+      else if (fixedShift[a.id]) code = fixedShift[a.id];
+      else if (bands[d] === "G") code = GY_CODE;
+      else code = codeAt.get(`${a.id}|${d}`) ?? MORNING_MIX[0];
       cells.push({ agent_id: a.id, date, shift_code: code });
     }
   }
