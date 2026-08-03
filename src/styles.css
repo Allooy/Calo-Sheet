@@ -394,11 +394,17 @@
 
 .dark .bg-slate-100 { background-color: rgba(255, 255, 255, 0.08); }
 .dark .bg-slate-200 { background-color: rgba(255, 255, 255, 0.12); }
+.dark .bg-slate-200\/60 { background-color: rgba(255, 255, 255, 0.10); }
+.dark .hover\:bg-slate-50\/80:hover { background-color: rgba(255, 255, 255, 0.06); }
+.dark .active\:bg-slate-100\/60:active { background-color: rgba(255, 255, 255, 0.10); }
+.dark .hover\:bg-white\/50:hover { background-color: rgba(255, 255, 255, 0.08); }
 
 .dark .border-slate-100 { border-color: rgba(255, 255, 255, 0.08); }
+.dark .border-slate-100\/80 { border-color: rgba(255, 255, 255, 0.08); }
 .dark .border-slate-200 { border-color: rgba(255, 255, 255, 0.12); }
 .dark .border-white\/40 { border-color: rgba(255, 255, 255, 0.10); }
 .dark .border-white\/30 { border-color: rgba(255, 255, 255, 0.08); }
+.dark .border-white\/15 { border-color: rgba(255, 255, 255, 0.08); }
 .dark .border-black\/5 { border-color: rgba(255, 255, 255, 0.10); }
 
 /* Tinted callouts read as washed-out pastels on dark; deepen them instead. */
