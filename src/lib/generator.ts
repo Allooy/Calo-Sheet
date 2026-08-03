@@ -53,6 +53,13 @@ export type GenInput = {
    * internal sort, or that sort discards it.
    */
   offset?: number;
+  /**
+   * Codes for the days *before* startSunday, keyed `${agentId}|${yyyy-MM-dd}`.
+   * Used to resume each agent's cycle across the month boundary rather than
+   * restarting it: their off-pattern is inferred from it, and a block that was
+   * already running on the 1st keeps its shift code.
+   */
+  history?: Record<string, string>;
 };
 
 export type GenCell = { agent_id: string; date: string; shift_code: string };
@@ -78,11 +85,13 @@ export type GenResult = {
 function assignPairs(
   agents: GenAgent[],
   gyPool: Set<string>,
+  known: Map<string, number> = new Map(),
 ): Map<string, number> {
-  const pair = new Map<string, number>();
-  const leads = agents.filter((a) => a.is_lead);
-  const gy = agents.filter((a) => !a.is_lead && gyPool.has(a.id));
-  const rest = agents.filter((a) => !a.is_lead && !gyPool.has(a.id));
+  // Pairs carried over from last month are fixed; only the rest are assigned.
+  const pair = new Map<string, number>(known);
+  const leads = agents.filter((a) => a.is_lead && !pair.has(a.id));
+  const gy = agents.filter((a) => !a.is_lead && gyPool.has(a.id) && !pair.has(a.id));
+  const rest = agents.filter((a) => !a.is_lead && !gyPool.has(a.id) && !pair.has(a.id));
 
   // Leads first — their spacing is a hard constraint, not a preference.
   leads.forEach((a, i) => {
@@ -119,15 +128,87 @@ function assignPairs(
   return pair;
 }
 
-/** Which agents work graveyard in a given week (rotates through the pool). */
-function gyForWeek(pool: GenAgent[], week: number): Set<string> {
-  const out = new Set<string>();
-  if (pool.length === 0) return out;
-  const take = Math.min(GY_PER_WEEK, pool.length);
-  for (let i = 0; i < take; i++) {
-    out.add(pool[(week * take + i) % pool.length].id);
+const HISTORY_DAYS = 14;
+
+export function bandOfCode(code: string): Band | null {
+  const c = (code ?? "").trim().toUpperCase();
+  if (["S1", "S2", "S3"].includes(c)) return "M";
+  if (["S4", "S5", "S5.5"].includes(c)) return "E";
+  if (c === "S6") return "G";
+  return null; // OFF, AL, SL, holidays …
+}
+
+type Carried = { pair: number | null; band: Band | null; code: string | null; midBlock: boolean };
+
+/**
+ * Read an agent's rhythm off the tail of the previous month.
+ *
+ * The off-pattern is a 7-day cycle, so the pair that best explains the last two
+ * weeks is the one to continue with. A weak match (someone on long leave, or a
+ * newly hired agent) returns null and the agent is assigned a fresh pair.
+ */
+function derivePrev(agentId: string, history: Record<string, string>, start: Date): Carried {
+  const obs: Array<{ wd: number; off: boolean }> = [];
+  for (let k = 1; k <= HISTORY_DAYS; k++) {
+    const d = addDays(start, -k);
+    const code = history[`${agentId}|${format(d, "yyyy-MM-dd")}`];
+    if (!code) continue;
+    obs.push({ wd: d.getDay(), off: code.trim().toUpperCase() === "OFF" });
   }
-  return out;
+
+  let pair: number | null = null;
+  if (obs.length >= 7) {
+    let best = -1;
+    for (const p of PAIRS) {
+      let score = 0;
+      for (const o of obs) if (pairCovers(p, o.wd) === o.off) score++;
+      if (score > best) { best = score; pair = p; }
+    }
+    if (best / obs.length < 0.85) pair = null; // too noisy to trust
+  }
+
+  // What they were working most recently, and whether a block was still running
+  // on the day before the new month starts.
+  let band: Band | null = null;
+  let code: string | null = null;
+  for (let k = 1; k <= HISTORY_DAYS; k++) {
+    const c = history[`${agentId}|${format(addDays(start, -k), "yyyy-MM-dd")}`];
+    if (!c) continue;
+    const b = bandOfCode(c);
+    if (b) { band = b; code = c.trim().toUpperCase(); break; }
+  }
+  const dayBefore = history[`${agentId}|${format(addDays(start, -1), "yyyy-MM-dd")}`];
+  const midBlock = !!dayBefore && bandOfCode(dayBefore) !== null;
+
+  return { pair, band, code, midBlock };
+}
+
+const overlap = (a: number, b: number) => PAIRS.some((d) => pairCovers(a, d) && pairCovers(b, d));
+
+/**
+ * Choose who works graveyard for the whole period.
+ *
+ * Rotating the trio mid-month cannot guarantee cover: blocks straddle Sundays,
+ * so an incoming agent's first graveyard block may start days after the
+ * outgoing one ended, leaving a day on 1. Holding three agents whose off-pairs
+ * never coincide means at most one is off on any day, so cover is always 2-3.
+ * `seed` rotates which three across months.
+ */
+function pickGyTrio(pool: GenAgent[], pairOf: Map<string, number>, seed: number): Set<string> {
+  const chosen: GenAgent[] = [];
+  const used: number[] = [];
+  for (let k = 0; k < pool.length && chosen.length < GY_PER_WEEK; k++) {
+    const a = pool[(seed + k) % pool.length];
+    const p = pairOf.get(a.id) ?? 0;
+    if (!used.some((q) => overlap(q, p))) { chosen.push(a); used.push(p); }
+  }
+  // Not enough disjoint pairs (carried-over history can cluster them) — fill up
+  // anyway and let verify() report any resulting thin day.
+  for (let k = 0; k < pool.length && chosen.length < GY_PER_WEEK; k++) {
+    const a = pool[(seed + k) % pool.length];
+    if (!chosen.some((c) => c.id === a.id)) chosen.push(a);
+  }
+  return new Set(chosen.map((a) => a.id));
 }
 
 export function generateSchedule(input: GenInput): GenResult {
@@ -154,8 +235,19 @@ export function generateSchedule(input: GenInput): GenResult {
     ? ((((input.offset ?? 0) % byName.length) + byName.length) % byName.length)
     : 0;
   const sorted = rot ? byName.slice(rot).concat(byName.slice(0, rot)) : byName;
-  const pair = assignPairs(sorted, gyPool);
+
+  // Continuity: resume each agent's cycle from the previous month.
+  const history = input.history ?? {};
+  const carriedBy = new Map<string, Carried>();
+  const knownPairs = new Map<string, number>();
+  for (const a of sorted) {
+    const c = derivePrev(a.id, history, start);
+    carriedBy.set(a.id, c);
+    if (c.pair != null) knownPairs.set(a.id, c.pair);
+  }
+  const pair = assignPairs(sorted, gyPool, knownPairs);
   const poolAgents = sorted.filter((a) => gyPool.has(a.id));
+  const gyIds = pickGyTrio(poolAgents, pair, input.offset ?? 0);
   if (poolAgents.length < GY_PER_WEEK) {
     warnings.push(
       `Graveyard pool has only ${poolAgents.length} eligible agents; need ${GY_PER_WEEK} per week for 2-3/day coverage.`,
@@ -166,6 +258,19 @@ export function generateSchedule(input: GenInput): GenResult {
   const leadHalf = Math.ceil(leads.length / 2);
   const leadGroup = new Map<string, number>();
   leads.forEach((a, i) => leadGroup.set(a.id, i < leadHalf ? 0 : 1));
+
+  // Leads hold one band for the whole period, swapped between months.
+  //
+  // With six leads, "one code per block", "flip band weekly" and "2-3 leads on
+  // each band daily" cannot all hold: a block only stays inside a calendar week
+  // when the off-pair is Fri+Sat or Sat+Sun, and only two such pairs exist. Any
+  // other pair straddles Sunday, so weekly flips land on different days per lead
+  // and the split drifts to 4-1. Daily cover is the stated rule, so it wins;
+  // fairness comes from swapping the trios each month instead.
+  const leadMorning = pickGyTrio(leads, pair, input.offset ?? 0);
+  if (leads.length >= 4 && leadMorning.size < 2) {
+    warnings.push("Could not find enough leads with non-overlapping days off for morning cover.");
+  }
 
   const rotators = sorted.filter((a) => !a.is_lead);
   const rotIndex = new Map<string, number>();
@@ -181,60 +286,74 @@ export function generateSchedule(input: GenInput): GenResult {
   for (let i = 0; i < totalDays; i++) dates.push(format(addDays(start, i), "yyyy-MM-dd"));
 
   const cells: GenCell[] = [];
-  const bandOf = new Map<string, Band>(); // per (agent|week)
-  const codeOf = new Map<string, string>(); // per (agent|week)
-  // Per-agent counters rather than a hash: a hash's low bit stays correlated
-  // with the band parity, which pins every evening block to one code.
+  // Counters rather than a hash: a hash's low bit stays correlated with the
+  // band parity, which pins every evening block to one code.
   const mCount = new Map<string, number>();
   const eCount = new Map<string, number>();
 
-  for (let w = 0; w < weeks; w++) {
-    const gyThisWeek = gyForWeek(poolAgents, w);
-    for (const a of sorted) {
-      let band: Band;
-      if (gyThisWeek.has(a.id)) {
-        band = "G";
-      } else if (a.is_lead) {
-        // Leads alternate morning/evening weekly; the two halves stay opposite
-        // so both bands always hold a full disjoint set of off-pairs.
-        band = (w + (leadGroup.get(a.id) ?? 0)) % 2 === 0 ? "M" : "E";
-      } else {
-        band = (w + (rotIndex.get(a.id) ?? 0)) % 2 === 0 ? "M" : "E";
-      }
-      bandOf.set(`${a.id}|${w}`, band);
-
-      if (band !== "G") {
-        const mix = band === "M" ? MORNING_MIX : EVENING_MIX;
-        const counter = band === "M" ? mCount : eCount;
-        const n = counter.get(a.id) ?? 0;
-        // Offset by agent index so the whole team doesn't start on the same code.
-        codeOf.set(`${a.id}|${w}`, mix[((idxOf.get(a.id) ?? 0) + n) % mix.length]);
-        counter.set(a.id, n + 1);
-      }
-    }
-  }
-
   for (const a of sorted) {
     const p = pair.get(a.id) ?? 0;
-    for (let i = 0; i < totalDays; i++) {
-      const date = dates[i];
-      const w = Math.floor(i / 7);
-      const weekday = i % 7;
+    const isOff = (i: number) => pairCovers(p, i % 7);
+
+    // Work blocks are maximal runs of non-off days. Assigning the code per
+    // block — not per calendar week — is what stops a block that straddles
+    // Sunday from reading S1 S1 S1 S5 S5.
+    const blocks: Array<{ start: number; end: number }> = [];
+    for (let i = 0; i < totalDays; ) {
+      if (isOff(i)) { i++; continue; }
+      let j = i;
+      while (j < totalDays && !isOff(j)) j++;
+      blocks.push({ start: i, end: j - 1 });
+      i = j;
+    }
+
+    const carried = carriedBy.get(a.id);
+    let lastBand: Band | null = carried?.band ?? null;
+    if (lastBand == null) {
+      // No history: seed so the two lead halves open on opposite bands, which
+      // is what keeps 2-3 leads on each of morning and evening every day.
+      lastBand = a.is_lead
+        ? ((leadGroup.get(a.id) ?? 0) === 0 ? "E" : "M")
+        : ((rotIndex.get(a.id) ?? 0) % 2 === 0 ? "E" : "M");
+    }
+
+    const codeByDay = new Array<string>(totalDays);
+    blocks.forEach((b, bi) => {
+      let band: Band;
+      let code: string;
+      // A block already running on the 1st keeps the code it started with.
+      if (bi === 0 && b.start === 0 && carried?.midBlock && carried.code) {
+        band = carried.band ?? "M";
+        code = carried.code;
+      } else {
+        if (gyIds.has(a.id)) band = "G";
+        else if (a.is_lead) band = leadMorning.has(a.id) ? "M" : "E";
+        else {
+          const group = (rotIndex.get(a.id) ?? 0) % 2;
+          band = (Math.floor(b.start / 7) + group) % 2 === 0 ? "M" : "E";
+        }
+        if (band === "G") code = GY_CODE;
+        else {
+          const mix = band === "M" ? MORNING_MIX : EVENING_MIX;
+          const counter = band === "M" ? mCount : eCount;
+          const n = counter.get(a.id) ?? 0;
+          code = mix[((idxOf.get(a.id) ?? 0) + n) % mix.length];
+          counter.set(a.id, n + 1);
+        }
+      }
+      const fixed = fixedShift[a.id];
+      if (fixed) code = fixed;
+      for (let d = b.start; d <= b.end; d++) codeByDay[d] = code;
+      lastBand = band;
+    });
+
+    for (let d = 0; d < totalDays; d++) {
+      const date = dates[d];
       const lv = leave[`${a.id}|${date}`];
       let code: string;
-      if (lv) {
-        code = lv; // leave overrides everything, matching how the sheets read
-      } else if (pairCovers(p, weekday)) {
-        code = "OFF";
-      } else {
-        const band = bandOf.get(`${a.id}|${w}`)!;
-        const fixed = fixedShift[a.id];
-        // One code per agent per week, so a whole 5-day block reads as one
-        // block the way the real sheets do.
-        if (fixed) code = fixed;
-        else if (band === "G") code = GY_CODE;
-        else code = codeOf.get(`${a.id}|${w}`)!;
-      }
+      if (lv) code = lv; // leave overrides everything, matching how the sheets read
+      else if (isOff(d)) code = "OFF";
+      else code = codeByDay[d];
       cells.push({ agent_id: a.id, date, shift_code: code });
     }
   }

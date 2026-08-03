@@ -1891,6 +1891,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [month, setMonth] = useState(() => format(addMonths(new Date(), 1), "yyyy-MM"));
   const [weeks, setWeeks] = useState(4);
   const [keepLeave, setKeepLeave] = useState(true);
+  const [continuePrev, setContinuePrev] = useState(true);
   const [offset, setOffset] = useState(0);
   const [gyPool, setGyPool] = useState<string[]>([]);
   const [fixed, setFixed] = useState<Record<string, string>>({});
@@ -2000,6 +2001,16 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           if (!/^S[0-9.]+$/.test(c) && c !== "OFF") leave[`${r.agent_id}|${r.date}`] = r.shift_code;
         }
       }
+      // The fortnight before the start date, so each agent's cycle resumes
+      // across the boundary instead of restarting.
+      const history: Record<string, string> = {};
+      if (continuePrev) {
+        const hFrom = format(addDays(start, -14), "yyyy-MM-dd");
+        const hTo = format(addDays(start, -1), "yyyy-MM-dd");
+        for (const r of await fetchSchedulesInRange(hFrom, hTo)) {
+          history[`${r.agent_id}|${r.date}`] = r.shift_code;
+        }
+      }
       const res = generateSchedule({
         agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
         startSunday: from,
@@ -2008,6 +2019,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         fixedShift: fixed,
         leave,
         offset,
+        history,
       });
       setPreview(res);
       if (res.warnings.length) toast.warning(`${res.warnings.length} rule warning(s)`);
@@ -2125,11 +2137,17 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           label="Keep existing leave"
           hint="Preserves AL, SL, DL, birthdays and holidays already entered for these dates."
         />
+        <Toggle
+          on={continuePrev} set={(v) => { setContinuePrev(v); setPreview(null); }}
+          label="Continue from last month"
+          hint="Resumes each agent's 5-on/2-off cycle across the boundary, keeping their days off and finishing a block that was still running."
+        />
         <div className="flex items-center gap-3 pt-1">
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold text-slate-700">Rotation offset</div>
             <div className="text-[11px] text-slate-500 leading-snug">
-              Shifts who gets which days off, so consecutive months don't repeat the same pattern.
+              Shifts who gets which days off, so consecutive months don't repeat the same
+              pattern. Only applies to agents without carried-over history.
             </div>
           </div>
           <input
