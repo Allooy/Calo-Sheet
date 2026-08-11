@@ -36,6 +36,7 @@ const MORNING_MIX = ["S1", "S1", "S2"];
 const EVENING_MIX = ["S4", "S5"];
 
 const GY_PER_WEEK = 3; // 3 assigned → 2-3 actually on duty each day
+const GY_WINDOW_WEEKS = 2; // how long a graveyard trio stays on nights
 
 export type Band = "M" | "E" | "G";
 export type GenAgent = { id: string; name: string; is_lead: boolean };
@@ -194,6 +195,32 @@ const overlap = (a: number, b: number) => PAIRS.some((d) => pairCovers(a, d) && 
  * never coincide means at most one is off on any day, so cover is always 2-3.
  * `seed` rotates which three across months.
  */
+/**
+ * Split a group in two so that *both* halves have non-overlapping days off.
+ * Picking one clean trio and letting the remainder fall into the other half
+ * leaves the remainder free to collide — which is how two leads ended up off
+ * on the same Tue/Wed and cover dropped to one.
+ */
+function splitDisjoint(
+  list: GenAgent[], pairOf: Map<string, number>, seed: number,
+): Set<string> {
+  // Fill A to half with mutually non-overlapping pairs before starting B.
+  // Balancing the two as we go tears a perfectly disjoint set apart: pairs
+  // 0,2,4 would land as A=[0], B=[2] and cover collapses.
+  const half = Math.ceil(list.length / 2);
+  const A: GenAgent[] = [], B: GenAgent[] = [];
+  const pA: number[] = [], pB: number[] = [];
+  for (let k = 0; k < list.length; k++) {
+    const ag = list[(seed + k) % list.length];
+    const p = pairOf.get(ag.id) ?? 0;
+    if (A.length < half && !pA.some((q) => overlap(q, p))) { A.push(ag); pA.push(p); }
+    else if (!pB.some((q) => overlap(q, p))) { B.push(ag); pB.push(p); }
+    else if (A.length < half) { A.push(ag); pA.push(p); }
+    else { B.push(ag); pB.push(p); }
+  }
+  return new Set(A.map((x) => x.id));
+}
+
 function pickGyTrio(pool: GenAgent[], pairOf: Map<string, number>, seed: number): Set<string> {
   const chosen: GenAgent[] = [];
   const used: number[] = [];
@@ -247,7 +274,17 @@ export function generateSchedule(input: GenInput): GenResult {
   }
   const pair = assignPairs(sorted, gyPool, knownPairs);
   const poolAgents = sorted.filter((a) => gyPool.has(a.id));
-  const gyIds = pickGyTrio(poolAgents, pair, input.offset ?? 0);
+  // Rotate graveyard every GY_WINDOW_WEEKS so the same three don't work nights
+  // for a whole month. Each trio still has non-overlapping days off, so cover
+  // holds at 2-3 within a window.
+  const gyWindows = new Map<number, Set<string>>();
+  const gyTrioFor = (week: number) => {
+    const w = Math.floor(week / GY_WINDOW_WEEKS);
+    if (!gyWindows.has(w)) {
+      gyWindows.set(w, pickGyTrio(poolAgents, pair, (input.offset ?? 0) + w * GY_PER_WEEK));
+    }
+    return gyWindows.get(w)!;
+  };
   if (poolAgents.length < GY_PER_WEEK) {
     warnings.push(
       `Graveyard pool has only ${poolAgents.length} eligible agents; need ${GY_PER_WEEK} per week for 2-3/day coverage.`,
@@ -267,11 +304,21 @@ export function generateSchedule(input: GenInput): GenResult {
   // other pair straddles Sunday, so weekly flips land on different days per lead
   // and the split drifts to 4-1. Daily cover is the stated rule, so it wins;
   // fairness comes from swapping the trios each month instead.
-  const leadMorning = pickGyTrio(leads, pair, input.offset ?? 0);
+  // Partition once from a fixed start: rotating the iteration order makes the
+  // greedy miss the clean split (with pairs 0..5 it finds {3,5,0} then is forced
+  // to put an overlapping pair in the other half). The offset only decides
+  // which half takes mornings, which is what rotates the load between months.
+  const leadGroupA = splitDisjoint(leads, pair, 0);
+  const leadsSwapped = ((input.offset ?? 0) % 2) === 1;
+  const leadMorning = new Set(
+    leads.filter((a) => leadGroupA.has(a.id) !== leadsSwapped).map((a) => a.id),
+  );
   if (leads.length >= 4 && leadMorning.size < 2) {
     warnings.push("Could not find enough leads with non-overlapping days off for morning cover.");
   }
 
+  const idxAll = new Map<string, number>();
+  sorted.forEach((a, i) => idxAll.set(a.id, i));
   const rotators = sorted.filter((a) => !a.is_lead);
   const rotIndex = new Map<string, number>();
   rotators.forEach((a, i) => rotIndex.set(a.id, i));
@@ -286,6 +333,7 @@ export function generateSchedule(input: GenInput): GenResult {
   // block never mixes morning with evening. That is the rule that matters; the
   // exact code may still move within a band (S1 -> S2), as the real sheets do.
   const bandByDay = new Map<string, Array<Band | null>>();
+  const prefByDay = new Map<string, Array<string | null>>();
   const seedCode = new Map<string, string>();
   for (const a of sorted) {
     const p = pair.get(a.id) ?? 0;
@@ -300,12 +348,17 @@ export function generateSchedule(input: GenInput): GenResult {
     }
     const carried = carriedBy.get(a.id);
     const bands = new Array<Band | null>(totalDays).fill(null);
+    const prefs = new Array<string | null>(totalDays).fill(null);
+    const ai = idxAll.get(a.id) ?? 0;
+    let nM = 0, nE = 0; // blocks served in each band, to rotate the code
     blocks.forEach((blk, bi) => {
       let band: Band;
+      let pref: string | null = null;
       if (bi === 0 && blk.start === 0 && carried?.midBlock && carried.band) {
         band = carried.band; // finish the run that was already under way
+        pref = carried.code ?? null;
         if (carried.code) seedCode.set(a.id, carried.code);
-      } else if (gyIds.has(a.id)) {
+      } else if (gyTrioFor(Math.floor(blk.start / 7)).has(a.id)) {
         band = "G";
       } else if (a.is_lead) {
         band = leadMorning.has(a.id) ? "M" : "E";
@@ -313,9 +366,35 @@ export function generateSchedule(input: GenInput): GenResult {
         const group = (rotIndex.get(a.id) ?? 0) % 2;
         band = (Math.floor(blk.start / 7) + group) % 2 === 0 ? "M" : "E";
       }
-      for (let d = blk.start; d <= blk.end; d++) bands[d] = band;
+      // Step through the band's mix block by block. Without this a lead, whose
+      // band never changes, keeps the same code every day for a month.
+      if (!pref && band === "M") pref = MORNING_MIX[(ai + nM++) % MORNING_MIX.length];
+      else if (!pref && band === "E") pref = EVENING_MIX[(ai + nE++) % EVENING_MIX.length];
+      for (let d = blk.start; d <= blk.end; d++) { bands[d] = band; prefs[d] = pref; }
     });
     bandByDay.set(a.id, bands);
+    prefByDay.set(a.id, prefs);
+  }
+
+  // Rotating the graveyard trio can leave a day at the window seam short: an
+  // outgoing block ends before the incoming one starts. Promote whole blocks
+  // until every day carries at least two, so rotation never costs cover.
+  for (let d = 0; d < totalDays; d++) {
+    let onNights = sorted.filter((a) => bandByDay.get(a.id)![d] === "G").length;
+    for (let guard = 0; onNights < 2 && guard < 8; guard++) {
+      const cand = sorted.find((a) => {
+        const b = bandByDay.get(a.id)![d];
+        return gyPool.has(a.id) && b !== null && b !== "G" && !fixedShift[a.id];
+      });
+      if (!cand) break;
+      const bands = bandByDay.get(cand.id)!;
+      const prefs = prefByDay.get(cand.id)!;
+      let s0 = d, e0 = d;
+      while (s0 > 0 && bands[s0 - 1] !== null) s0--;
+      while (e0 < totalDays - 1 && bands[e0 + 1] !== null) e0++;
+      for (let x = s0; x <= e0; x++) { bands[x] = "G"; prefs[x] = null; }
+      onNights++;
+    }
   }
 
   // Pass 2 — pick the code inside each band, day by day, so the team's mix stays
@@ -340,8 +419,8 @@ export function generateSchedule(input: GenInput): GenResult {
       });
       const pending: string[] = [];
       for (const a of pool) {
-        const pc = lastCode.get(a.id);
-        if (pc && quota[pc] > 0) { codeAt.set(`${a.id}|${d}`, pc); quota[pc]--; }
+        const want = prefByDay.get(a.id)?.[d] ?? lastCode.get(a.id);
+        if (want && quota[want] > 0) { codeAt.set(`${a.id}|${d}`, want); quota[want]--; }
         else pending.push(a.id);
       }
       for (const id of pending) {
