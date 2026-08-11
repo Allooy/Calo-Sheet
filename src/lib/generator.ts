@@ -36,7 +36,7 @@ const MORNING_MIX = ["S1", "S1", "S2"];
 const EVENING_MIX = ["S4", "S5"];
 
 const GY_PER_WEEK = 3; // 3 assigned → 2-3 actually on duty each day
-const GY_WINDOW_WEEKS = 2; // how long a graveyard trio stays on nights
+const GY_WINDOW_WEEKS = 1; // one week of nights, then the trio rotates out
 
 export type Band = "M" | "E" | "G";
 export type GenAgent = { id: string; name: string; is_lead: boolean };
@@ -274,17 +274,28 @@ export function generateSchedule(input: GenInput): GenResult {
   }
   const pair = assignPairs(sorted, gyPool, knownPairs);
   const poolAgents = sorted.filter((a) => gyPool.has(a.id));
-  // Rotate graveyard every GY_WINDOW_WEEKS so the same three don't work nights
-  // for a whole month. Each trio still has non-overlapping days off, so cover
-  // holds at 2-3 within a window.
-  const gyWindows = new Map<number, Set<string>>();
-  const gyTrioFor = (week: number) => {
-    const w = Math.floor(week / GY_WINDOW_WEEKS);
-    if (!gyWindows.has(w)) {
-      gyWindows.set(w, pickGyTrio(poolAgents, pair, (input.offset ?? 0) + w * GY_PER_WEEK));
+  // Rotate graveyard every GY_WINDOW_WEEKS, and never give anyone two stretches
+  // in a row: each window is drawn from the pool minus whoever just finished.
+  // Each trio still has non-overlapping days off, so cover holds within a window.
+  const nWindows = Math.max(1, Math.ceil(weeks / GY_WINDOW_WEEKS));
+  const gyByWindow: Array<Set<string>> = [];
+  let servedLast = new Set<string>();
+  for (let w = 0; w < nWindows; w++) {
+    const seed = (input.offset ?? 0) + w * GY_PER_WEEK;
+    const rested = poolAgents.filter((a) => !servedLast.has(a.id));
+    let trio = pickGyTrio(rested, pair, seed);
+    if (trio.size < Math.min(GY_PER_WEEK, poolAgents.length)) {
+      // Pool too small to sit everyone out for a window — cover wins.
+      trio = pickGyTrio(poolAgents, pair, seed);
+      if (poolAgents.length >= GY_PER_WEEK * 2) {
+        warnings.push("Graveyard pool too small to avoid back-to-back night stretches.");
+      }
     }
-    return gyWindows.get(w)!;
-  };
+    gyByWindow.push(trio);
+    servedLast = trio;
+  }
+  const gyTrioFor = (week: number) =>
+    gyByWindow[Math.min(Math.floor(week / GY_WINDOW_WEEKS), gyByWindow.length - 1)];
   if (poolAgents.length < GY_PER_WEEK) {
     warnings.push(
       `Graveyard pool has only ${poolAgents.length} eligible agents; need ${GY_PER_WEEK} per week for 2-3/day coverage.`,
@@ -351,6 +362,7 @@ export function generateSchedule(input: GenInput): GenResult {
     const prefs = new Array<string | null>(totalDays).fill(null);
     const ai = idxAll.get(a.id) ?? 0;
     let nM = 0, nE = 0; // blocks served in each band, to rotate the code
+    let prevWasG = carried?.band === "G"; // no two night stretches back to back
     blocks.forEach((blk, bi) => {
       let band: Band;
       let pref: string | null = null;
@@ -358,7 +370,7 @@ export function generateSchedule(input: GenInput): GenResult {
         band = carried.band; // finish the run that was already under way
         pref = carried.code ?? null;
         if (carried.code) seedCode.set(a.id, carried.code);
-      } else if (gyTrioFor(Math.floor(blk.start / 7)).has(a.id)) {
+      } else if (gyTrioFor(Math.floor(blk.start / 7)).has(a.id) && !prevWasG) {
         band = "G";
       } else if (a.is_lead) {
         band = leadMorning.has(a.id) ? "M" : "E";
@@ -371,6 +383,7 @@ export function generateSchedule(input: GenInput): GenResult {
       if (!pref && band === "M") pref = MORNING_MIX[(ai + nM++) % MORNING_MIX.length];
       else if (!pref && band === "E") pref = EVENING_MIX[(ai + nE++) % EVENING_MIX.length];
       for (let d = blk.start; d <= blk.end; d++) { bands[d] = band; prefs[d] = pref; }
+      prevWasG = band === "G";
     });
     bandByDay.set(a.id, bands);
     prefByDay.set(a.id, prefs);
@@ -382,10 +395,38 @@ export function generateSchedule(input: GenInput): GenResult {
   for (let d = 0; d < totalDays; d++) {
     let onNights = sorted.filter((a) => bandByDay.get(a.id)![d] === "G").length;
     for (let guard = 0; onNights < 2 && guard < 8; guard++) {
-      const cand = sorted.find((a) => {
-        const b = bandByDay.get(a.id)![d];
-        return gyPool.has(a.id) && b !== null && b !== "G" && !fixedShift[a.id];
-      });
+      const nightsSoFar = (id: string) =>
+        bandByDay.get(id)!.reduce((n, b) => n + (b === "G" ? 1 : 0), 0);
+      // Prefer someone who would not end up on nights twice running; if nobody
+      // qualifies, cover wins over the rest rule and we say so.
+      const candidates = (strict: boolean) =>
+        sorted
+          .filter((a) => {
+            const bands = bandByDay.get(a.id)!;
+            const b = bands[d];
+            if (!(gyPool.has(a.id) && b !== null && b !== "G" && !fixedShift[a.id])) return false;
+            if (!strict) return true;
+            let s0 = d, e0 = d;
+            while (s0 > 0 && bands[s0 - 1] !== null) s0--;
+            while (e0 < totalDays - 1 && bands[e0 + 1] !== null) e0++;
+            let before = s0 - 1;
+            while (before >= 0 && bands[before] === null) before--;
+            let after = e0 + 1;
+            while (after < totalDays && bands[after] === null) after++;
+            if (before >= 0 && bands[before] === "G") return false;
+            if (after < totalDays && bands[after] === "G") return false;
+            return true;
+          })
+          .sort((x, y) => nightsSoFar(x.id) - nightsSoFar(y.id))[0];
+      let cand = candidates(true);
+      if (!cand) {
+        cand = candidates(false);
+        if (cand) {
+          warnings.push(
+            `Gave ${cand.name} a second night stretch to keep graveyard cover on ${dates[d]}.`,
+          );
+        }
+      }
       if (!cand) break;
       const bands = bandByDay.get(cand.id)!;
       const prefs = prefByDay.get(cand.id)!;
