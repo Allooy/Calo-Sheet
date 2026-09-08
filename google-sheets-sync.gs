@@ -263,7 +263,26 @@ function inkFor_(code) {
   return TEXT_OVERRIDE[String(code || '').trim().toUpperCase()] || '#000000';
 }
 
+/**
+ * Serialised entry point.
+ *
+ * Two overlapping runs both unfreeze, break merges, clear and re-merge the same
+ * tab. Interleave those and the grid can be left in a state the editor cannot
+ * load. A script lock makes a second caller wait rather than race.
+ */
 function syncMonth(month, weeks) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(45000)) {
+    throw new Error('Another sync is already running; try again in a moment.');
+  }
+  try {
+    return syncMonth_(month, weeks);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function syncMonth_(month, weeks) {
   weeks = weeks || 4;
   var tz = Session.getScriptTimeZone();
   var parts = month.split('-');

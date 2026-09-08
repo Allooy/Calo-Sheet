@@ -2135,17 +2135,15 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     const opts = { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload };
     setSyncing(true);
     try {
+      // Exactly one request. A failure here is the browser refusing to *read*
+      // the cross-origin redirect, not a failure to send — retrying would run
+      // the sync a second time and let two writes race on the same tab.
       const res = await fetch(sheetUrl, opts);
       const j = await res.json();
       if (j.ok) toast.success(`Sheet updated — ${j.agents} rows for ${j.month}`);
       else toast.error(`Sheet: ${j.error}`);
     } catch {
-      try {
-        await fetch(sheetUrl, { ...opts, mode: "no-cors" });
-        toast.message("Sync sent to Sheets — response not readable, check the sheet");
-      } catch {
-        toast.error("Could not reach the Apps Script URL");
-      }
+      toast.message("Sync sent to Sheets — response not readable, check the sheet");
     } finally {
       setSyncing(false);
     }
