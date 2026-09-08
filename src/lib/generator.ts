@@ -119,20 +119,96 @@ export type GenResult = {
   stats: GenStats;
 };
 
-/** Assign every agent one off-pair held for the whole period. */
+/**
+ * How many agents must take each off-pair to produce a wanted off-per-weekday
+ * curve. An agent is off on two consecutive days, so off[d] = x[d] + x[d-1];
+ * the week is a 7-cycle and 7 is odd, so that system has exactly one solution.
+ * Returns null when it needs a negative or fractional count, i.e. the curve
+ * cannot be built out of consecutive pairs at all.
+ */
+export function solveOffPairs(off: number[], n: number): number[] | null {
+  const x0 = (off[0] + off[1] - off[2] + off[3] - off[4] + off[5] - off[6]) / 2;
+  const x = [x0];
+  for (let d = 1; d < 7; d++) x.push(off[d] - x[d - 1]);
+  const whole = (v: number) => Math.abs(v - Math.round(v)) < 1e-6;
+  const total = x.reduce((a, b) => a + b, 0);
+  if (!x.every((v) => v >= -1e-6 && whole(v))) return null;
+  if (Math.abs(total - n) > 1e-6) return null;
+  if (Math.abs(x[6] + x[0] - off[0]) > 1e-6) return null; // cycle must close
+  return x.map((v) => Math.round(v));
+}
+
+/**
+ * Assign every agent one off-pair held for the whole period.
+ *
+ * With a quota (from solveOffPairs) the off-per-weekday curve is met exactly:
+ * carried-over patterns are honoured while a slot remains, then leads and the
+ * graveyard pool are spaced out within what is left, then everyone else fills
+ * the remaining slots. Without a quota it falls back to a least-squares fit
+ * against the shape measured from the real sheets.
+ */
 function assignPairs(
   agents: GenAgent[],
   gyPool: Set<string>,
   known: Map<string, number> = new Map(),
   offTarget?: number[],
+  quota?: number[] | null,
 ): Map<string, number> {
-  // Pairs carried over from last month are fixed; only the rest are assigned.
-  const pair = new Map<string, number>(known);
+  const pair = new Map<string, number>();
+
+  if (quota) {
+    const left = [...quota];
+    const take = (id: string, p: number) => { pair.set(id, p); left[p]--; };
+    const roomiest = (avoid: number[] = []) => {
+      let best = -1;
+      for (let p = 0; p < 7; p++) {
+        if (left[p] <= 0) continue;
+        if (avoid.some((q) => overlap(q, p))) continue;
+        if (best < 0 || left[p] > left[best]) best = p;
+      }
+      return best;
+    };
+
+    // Keep a carried pattern when its slot is still free.
+    for (const a of agents) {
+      const p = known.get(a.id);
+      if (p != null && left[p] > 0) take(a.id, p);
+    }
+    const rest = agents.filter((a) => !pair.has(a.id));
+    // Leads and the graveyard pool need days off that do not coincide, so they
+    // pick first and avoid each other inside their own group.
+    const spaced = (list: GenAgent[], groups: number) => {
+      const used: number[][] = Array.from({ length: groups }, () => []);
+      list.forEach((a, i) => {
+        const g = i % groups;
+        let p = roomiest(used[g]);
+        if (p < 0) p = roomiest();
+        if (p >= 0) { take(a.id, p); used[g].push(p); }
+      });
+    };
+    spaced(rest.filter((a) => a.is_lead), 2);
+    spaced(rest.filter((a) => !a.is_lead && gyPool.has(a.id)), 1);
+    for (const a of rest.filter((x) => !pair.has(x.id))) {
+      const p = roomiest();
+      if (p >= 0) take(a.id, p);
+    }
+    // Anyone left over (quota exhausted by rounding) goes wherever is emptiest.
+    for (const a of agents) {
+      if (!pair.has(a.id)) {
+        let best = 0;
+        for (let p = 1; p < 7; p++) if (left[p] > left[best]) best = p;
+        take(a.id, best);
+      }
+    }
+    return pair;
+  }
+
+  // ── no quota: fit the measured curve as closely as a greedy can ──
+  for (const [id, p] of known) pair.set(id, p);
   const leads = agents.filter((a) => a.is_lead && !pair.has(a.id));
   const gy = agents.filter((a) => !a.is_lead && gyPool.has(a.id) && !pair.has(a.id));
   const rest = agents.filter((a) => !a.is_lead && !gyPool.has(a.id) && !pair.has(a.id));
 
-  // Leads first — their spacing is a hard constraint, not a preference.
   leads.forEach((a, i) => {
     const half = Math.ceil(leads.length / 2);
     const set = i < half ? LEAD_PAIRS_A : LEAD_PAIRS_B;
@@ -140,11 +216,8 @@ function assignPairs(
   });
   gy.forEach((a, i) => pair.set(a.id, GY_PAIR_CYCLE[i % GY_PAIR_CYCLE.length]));
 
-  // Everyone else fills the measured weekday curve as closely as possible.
   const n = agents.length;
   const wsum = WEEKDAY_OFF_WEIGHTS.reduce((s, x) => s + x, 0);
-  // Coverage targets pin how many work each weekday, so the rest are off.
-  // Without them, fall back to the shape measured from the real sheets.
   const target = offTarget ?? WEEKDAY_OFF_WEIGHTS.map((w) => (w / wsum) * 2 * n);
   const cur = new Array(7).fill(0);
   for (const [, p] of pair) for (const d of PAIRS) if (pairCovers(p, d)) cur[d]++;
@@ -158,10 +231,7 @@ function assignPairs(
         const v = cur[d] + (pairCovers(p, d) ? 1 : 0) - target[d];
         cost += v * v;
       }
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = p;
-      }
+      if (cost < bestCost) { bestCost = cost; best = p; }
     }
     pair.set(a.id, best);
     for (let d = 0; d < 7; d++) if (pairCovers(best, d)) cur[d]++;
@@ -319,7 +389,13 @@ export function generateSchedule(input: GenInput): GenResult {
   const offTarget = cov
     ? cov.map((row) => Math.max(0, sorted.length - Object.values(row).reduce((n, v) => n + (v || 0), 0)))
     : undefined;
-  const pair = assignPairs(sorted, gyPool, knownPairs, offTarget);
+  const quota = offTarget ? solveOffPairs(offTarget, sorted.length) : null;
+  if (offTarget && !quota) {
+    warnings.push(
+      "That set of daily headcounts cannot be built from 5-on/2-off with two consecutive days off — the off numbers were fitted as closely as possible instead.",
+    );
+  }
+  const pair = assignPairs(sorted, gyPool, knownPairs, offTarget, quota);
 
   // How the working population should divide between the two day bands. A band
   // is held for a whole block, so this steers the split rather than pinning it.
@@ -347,6 +423,12 @@ export function generateSchedule(input: GenInput): GenResult {
   // Rotate graveyard every GY_WINDOW_WEEKS, and never give anyone two stretches
   // in a row: each window is drawn from the pool minus whoever just finished.
   // Each trio still has non-overlapping days off, so cover holds within a window.
+  // How many on nights each weekday, from the S6 column when set.
+  const gyNeed = (weekday: number) => (cov ? (cov[weekday]?.S6 ?? 0) : 2);
+  const gyPeak = cov ? Math.max(...[0, 1, 2, 3, 4, 5, 6].map(gyNeed)) : 2;
+  // One more than the peak: within a spaced trio roughly one is off each day.
+  const gyPerWindow = Math.max(1, gyPeak + 1);
+
   const nWindows = Math.max(1, Math.ceil(weeks / GY_WINDOW_WEEKS));
   const gyByWindow: Array<Set<string>> = [];
   const gyBlocks = new Map<string, number>();
@@ -354,7 +436,7 @@ export function generateSchedule(input: GenInput): GenResult {
   let servedLast = new Set<string>();
   for (let w = 0; w < nWindows; w++) {
     const seed = (input.offset ?? 0) + w * GY_PER_WEEK;
-    const want = Math.min(GY_PER_WEEK, poolAgents.length);
+    const want = Math.min(gyPerWindow, poolAgents.length);
     // Rested and under the cap is the target. Relax the cap before the rest
     // rule if the pool is too thin — a third stretch is kinder than two weeks
     // of nights running.
@@ -422,6 +504,16 @@ export function generateSchedule(input: GenInput): GenResult {
       "Shift leads' days off were re-spaced: the carried-over pattern put too many of them off together to keep 2-3 leads on each band.",
     );
   }
+  // A lead pinned to a fixed code can only ever cover one band, which quietly
+  // shrinks the pool that has to hold 2-3 on each.
+  for (const a of leads) {
+    const f = fixedShift[a.id];
+    if (f) {
+      warnings.push(
+        `${a.name} is a shift lead pinned to ${f}, so they can only ever cover one band — that leaves ${leads.length - 1} leads to cover both.`,
+      );
+    }
+  }
   const leadsSwapped = ((input.offset ?? 0) % 2) === 1;
   const leadMorning = new Set(
     leads.filter((a) => leadGroupA.has(a.id) !== leadsSwapped).map((a) => a.id),
@@ -445,6 +537,12 @@ export function generateSchedule(input: GenInput): GenResult {
   const bandByDay = new Map<string, Array<Band | null>>();
   const prefByDay = new Map<string, Array<string | null>>();
   const seedCode = new Map<string, string>();
+  // Live count of who is already on each band each day, so a block can be
+  // placed where the shortfall is rather than by a flat global ratio.
+  const onM = new Array(totalDays).fill(0);
+  const onE = new Array(totalDays).fill(0);
+  const needM = (d: number) => (cov ? sumCodes(cov[wd(d)], MORNING_CODES) : Infinity);
+  const needE = (d: number) => (cov ? sumCodes(cov[wd(d)], EVENING_CODES) : Infinity);
   for (const a of sorted) {
     const p = pair.get(a.id) ?? 0;
     const isOff = (i: number) => pairCovers(p, wd(i));
@@ -479,6 +577,15 @@ export function generateSchedule(input: GenInput): GenResult {
         gyUsed++;
       } else if (a.is_lead) {
         band = leadMorning.has(a.id) ? "M" : "E";
+      } else if (cov) {
+        // Put the block on whichever band is further below target across the
+        // days it actually covers. The band still holds for the whole block.
+        let gapM = 0, gapE = 0;
+        for (let d = blk.start; d <= blk.end; d++) {
+          gapM += needM(d) - onM[d];
+          gapE += needE(d) - onE[d];
+        }
+        band = gapM >= gapE ? "M" : "E";
       } else {
         const plan = bandPlan.get(a.id) ?? 0;
         band = plan === "M" || plan === "E"
@@ -489,7 +596,12 @@ export function generateSchedule(input: GenInput): GenResult {
       // band never changes, keeps the same code every day for a month.
       if (!pref && band === "M") pref = MORNING_MIX[(ai + nM++) % MORNING_MIX.length];
       else if (!pref && band === "E") pref = EVENING_MIX[(ai + nE++) % EVENING_MIX.length];
-      for (let d = blk.start; d <= blk.end; d++) { bands[d] = band; prefs[d] = pref; }
+      for (let d = blk.start; d <= blk.end; d++) {
+        bands[d] = band;
+        prefs[d] = pref;
+        if (band === "M") onM[d]++;
+        else if (band === "E") onE[d]++;
+      }
       prevWasG = band === "G";
     });
     bandByDay.set(a.id, bands);
@@ -500,8 +612,9 @@ export function generateSchedule(input: GenInput): GenResult {
   // outgoing block ends before the incoming one starts. Promote whole blocks
   // until every day carries at least two, so rotation never costs cover.
   for (let d = 0; d < totalDays; d++) {
+    const need = Math.max(0, gyNeed(wd(d)));
     let onNights = sorted.filter((a) => bandByDay.get(a.id)![d] === "G").length;
-    for (let guard = 0; onNights < 2 && guard < 8; guard++) {
+    for (let guard = 0; onNights < need && guard < 8; guard++) {
       const nightsSoFar = (id: string) =>
         bandByDay.get(id)!.reduce((n, b) => n + (b === "G" ? 1 : 0), 0);
       // Prefer someone who would not end up on nights twice running; if nobody
@@ -533,24 +646,14 @@ export function generateSchedule(input: GenInput): GenResult {
             return true;
           })
           .sort((x, y) => nightsSoFar(x.id) - nightsSoFar(y.id))[0];
-      let cand = candidates("strict");
+      // Rest rules are not broken to hit the number: fall short and name it.
+      const cand = candidates("strict");
       if (!cand) {
-        cand = candidates("overCap");
-        if (cand) {
-          warnings.push(
-            `Gave ${cand.name} more than ${MAX_GY_BLOCKS} night stretches to keep graveyard cover on ${dates[d]}.`,
-          );
-        }
+        warnings.push(
+          `Only ${onNights} on nights for ${dates[d]}, wanted ${need} — no eligible agent left without breaking the rest rules.`,
+        );
+        break;
       }
-      if (!cand) {
-        cand = candidates("any");
-        if (cand) {
-          warnings.push(
-            `Gave ${cand.name} back-to-back night stretches to keep graveyard cover on ${dates[d]}.`,
-          );
-        }
-      }
-      if (!cand) break;
       const bands = bandByDay.get(cand.id)!;
       const prefs = prefByDay.get(cand.id)!;
       let s0 = d, e0 = d;
