@@ -38,6 +38,9 @@ const EVENING_MIX = ["S4", "S5"];
 const GY_PER_WEEK = 3; // 3 assigned → 2-3 actually on duty each day
 const GY_WINDOW_WEEKS = 1; // one week of nights, then the trio rotates out
 const MAX_GY_BLOCKS = 2; // ceiling on night stretches per agent per period
+// How far below target the other band must be before an agent stays put rather
+// than alternating. Higher favours the headcount targets, lower favours rotation.
+const ROTATE_BIAS = 2;
 
 export type Band = "M" | "E" | "G";
 export type GenAgent = { id: string; name: string; is_lead: boolean };
@@ -541,6 +544,10 @@ export function generateSchedule(input: GenInput): GenResult {
   // placed where the shortfall is rather than by a flat global ratio.
   const onM = new Array(totalDays).fill(0);
   const onE = new Array(totalDays).fill(0);
+  // Leads tracked separately: they must hold 2-3 on each band every day, which
+  // is a tighter constraint than the team-wide totals.
+  const leadM = new Array(totalDays).fill(0);
+  const leadE = new Array(totalDays).fill(0);
   const needM = (d: number) => (cov ? sumCodes(cov[wd(d)], MORNING_CODES) : Infinity);
   const needE = (d: number) => (cov ? sumCodes(cov[wd(d)], EVENING_CODES) : Infinity);
   for (const a of sorted) {
@@ -560,6 +567,8 @@ export function generateSchedule(input: GenInput): GenResult {
     const ai = idxAll.get(a.id) ?? 0;
     let nM = 0, nE = 0; // blocks served in each band, to rotate the code
     let prevWasG = carried?.band === "G"; // no two night stretches back to back
+    // Last day band worked, so a block can prefer to alternate away from it.
+    let prevDayBand: Band | null = carried?.band === "G" ? null : (carried?.band ?? null);
     let gyUsed = prevWasG ? 1 : 0;         // night stretches already spent
     blocks.forEach((blk, bi) => {
       let band: Band;
@@ -576,16 +585,27 @@ export function generateSchedule(input: GenInput): GenResult {
         band = "G";
         gyUsed++;
       } else if (a.is_lead) {
-        band = leadMorning.has(a.id) ? "M" : "E";
+        // Send the lead to whichever band is thinner over the days this block
+        // covers. Balancing directly is what holds 2-3 on each, and it lets
+        // them rotate instead of owning one band for the month.
+        let cm = 0, ce = 0;
+        for (let d = blk.start; d <= blk.end; d++) { cm += leadM[d]; ce += leadE[d]; }
+        band = cm < ce ? "M" : ce < cm ? "E" : (prevDayBand === "M" ? "E" : "M");
       } else if (cov) {
-        // Put the block on whichever band is further below target across the
-        // days it actually covers. The band still holds for the whole block.
+        // Whichever band is further below target across the days this block
+        // covers — but rotate by default, and only stay put when the other
+        // band is materially shorter. Otherwise an agent whose block always
+        // lands in the same place never leaves one band.
         let gapM = 0, gapE = 0;
         for (let d = blk.start; d <= blk.end; d++) {
           gapM += needM(d) - onM[d];
           gapE += needE(d) - onE[d];
         }
-        band = gapM >= gapE ? "M" : "E";
+        const rotateTo = prevDayBand === "M" ? "E" : "M";
+        const stayTo = rotateTo === "M" ? "E" : "M";
+        const gapRotate = rotateTo === "M" ? gapM : gapE;
+        const gapStay = stayTo === "M" ? gapM : gapE;
+        band = gapStay > gapRotate + ROTATE_BIAS ? stayTo : rotateTo;
       } else {
         const plan = bandPlan.get(a.id) ?? 0;
         band = plan === "M" || plan === "E"
@@ -594,15 +614,19 @@ export function generateSchedule(input: GenInput): GenResult {
       }
       // Step through the band's mix block by block. Without this a lead, whose
       // band never changes, keeps the same code every day for a month.
+      // Coming off nights you step down to mornings, never straight back to
+      // evenings — which is what allowed S6, evening, S6 in consecutive weeks.
+      if (prevWasG && band === "E") band = "M";
       if (!pref && band === "M") pref = MORNING_MIX[(ai + nM++) % MORNING_MIX.length];
       else if (!pref && band === "E") pref = EVENING_MIX[(ai + nE++) % EVENING_MIX.length];
       for (let d = blk.start; d <= blk.end; d++) {
         bands[d] = band;
         prefs[d] = pref;
-        if (band === "M") onM[d]++;
-        else if (band === "E") onE[d]++;
+        if (band === "M") { onM[d]++; if (a.is_lead) leadM[d]++; }
+        else if (band === "E") { onE[d]++; if (a.is_lead) leadE[d]++; }
       }
       prevWasG = band === "G";
+      if (band !== "G") prevDayBand = band;
     });
     bandByDay.set(a.id, bands);
     prefByDay.set(a.id, prefs);
@@ -661,6 +685,25 @@ export function generateSchedule(input: GenInput): GenResult {
       while (e0 < totalDays - 1 && bands[e0 + 1] !== null) e0++;
       for (let x = s0; x <= e0; x++) { bands[x] = "G"; prefs[x] = null; }
       onNights++;
+    }
+  }
+
+  // The repair pass promotes blocks to nights after bands were chosen, so it
+  // can create a night block the step-down rule never saw. Re-apply it here:
+  // the block after a night block is mornings, never evenings.
+  for (const a of sorted) {
+    const bands = bandByDay.get(a.id)!;
+    const prefs = prefByDay.get(a.id)!;
+    let prevBand: Band | null = null;
+    for (let d = 0; d < totalDays; ) {
+      if (bands[d] === null) { d++; continue; }
+      let e = d;
+      while (e + 1 < totalDays && bands[e + 1] !== null) e++;
+      if (prevBand === "G" && bands[d] === "E") {
+        for (let x = d; x <= e; x++) { bands[x] = "M"; prefs[x] = null; }
+      }
+      prevBand = bands[d];
+      d = e + 1;
     }
   }
 
