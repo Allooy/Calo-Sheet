@@ -178,7 +178,7 @@ function probeSchedules() {
 
 /** Quick credential/connection check that writes nothing. */
 function testConnection() {
-  var agents = sb_('agents', 'select=id,name&active=eq.true&order=name');
+  var agents = sb_('agents', 'select=id,name&active=eq.true&order=sort_order.asc.nullslast,name.asc');
   Logger.log('OK — Supabase returned ' + agents.length + ' active agents.');
   return agents.length;
 }
@@ -281,7 +281,7 @@ function syncMonth(month, weeks) {
   var from = fmt_(dates[0]);
   var to = fmt_(dates[dates.length - 1]);
 
-  var agents = sb_('agents', 'select=id,name,is_lead,is_specialist,active&active=eq.true&order=name');
+  var agents = sb_('agents', 'select=id,name,is_lead,is_specialist,active&active=eq.true&order=sort_order.asc.nullslast,name.asc');
   var rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
   var byKey = {};
   for (var j = 0; j < rows.length; j++) {

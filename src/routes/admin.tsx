@@ -28,6 +28,7 @@ import {
   ImagePlus,
   Sparkles,
   Star,
+  GripVertical,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GlassCard } from "@/components/GlassCard";
@@ -146,7 +147,7 @@ function GridTab() {
       const from = format(monthStart, "yyyy-MM-dd");
       const to = format(monthEnd, "yyyy-MM-dd");
       const [a, s] = await Promise.all([
-        supabase.from("agents").select("*").eq("active", true).order("name"),
+        supabase.from("agents").select("*").eq("active", true).order("sort_order", { ascending: true, nullsFirst: false }).order("name"),
         fetchSchedulesInRange(from, to),
       ]);
       if (cancel) return;
@@ -427,7 +428,7 @@ function BulkTab({ adminEmail }: { adminEmail: string }) {
     const from = format(startOfMonth(cursor), "yyyy-MM-dd");
     const to = format(endOfMonth(cursor), "yyyy-MM-dd");
     const [a, s] = await Promise.all([
-      supabase.from("agents").select("*").eq("active", true).order("name"),
+      supabase.from("agents").select("*").eq("active", true).order("sort_order", { ascending: true, nullsFirst: false }).order("name"),
       fetchSchedulesInRange(from, to),
     ]);
     setAgents((a.data as Agent[] | null) ?? []);
@@ -830,7 +831,7 @@ function EditTab({ adminEmail }: { adminEmail: string }) {
     async function load() {
       setLoading(true);
       const [a, s] = await Promise.all([
-        supabase.from("agents").select("*").eq("active", true).order("name"),
+        supabase.from("agents").select("*").eq("active", true).order("sort_order", { ascending: true, nullsFirst: false }).order("name"),
         supabase.from("schedules").select("*").eq("date", date),
       ]);
       if (cancel) return;
@@ -1358,6 +1359,7 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     supabase
       .from("agents")
       .select("*")
+      .order("sort_order", { ascending: true, nullsFirst: false })
       .order("name")
       .then(({ data }) => {
         if (cancel) return;
@@ -1366,6 +1368,8 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
       });
     return () => { cancel = true; };
   }, []);
+
+  const [dragId, setDragId] = useState<string | null>(null);
 
   function openAdd() {
     setEditing(null);
@@ -1461,6 +1465,41 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     await supabase.from("audit_log").insert({ user_email: adminEmail, action: "agent_active_toggled", details: { id: a.id, active: !a.active } });
   }
 
+  /** Persist the current row order; only rows whose position actually moved. */
+  async function persistOrder(list: Agent[]) {
+    const changed = list
+      .map((a, i) => ({ a, want: (i + 1) * 10 }))
+      .filter(({ a, want }) => a.sort_order !== want);
+    if (!changed.length) return;
+    for (let i = 0; i < changed.length; i += 10) {
+      await Promise.all(
+        changed.slice(i, i + 10).map(({ a, want }) =>
+          supabase.from("agents").update({ sort_order: want }).eq("id", a.id),
+        ),
+      );
+    }
+    setAgents((arr) => arr.map((x) => {
+      const hit = changed.find((c) => c.a.id === x.id);
+      return hit ? { ...x, sort_order: hit.want } : x;
+    }));
+    await supabase.from("audit_log").insert({
+      user_email: adminEmail, action: "agents_reordered",
+      details: { moved: changed.length },
+    });
+  }
+
+  function dropOn(targetId: string) {
+    if (!dragId || dragId === targetId) { setDragId(null); return; }
+    const from = agents.findIndex((a) => a.id === dragId);
+    const to = agents.findIndex((a) => a.id === targetId);
+    if (from < 0 || to < 0) { setDragId(null); return; }
+    const next = [...agents];
+    next.splice(to, 0, next.splice(from, 1)[0]);
+    setAgents(next);
+    setDragId(null);
+    void persistOrder(next);
+  }
+
   function exportAgentsCSV() {
     const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const head = ["Name", "Email", "Role", "Lead", "Active", "Avatar URL", "Created"];
@@ -1526,7 +1565,21 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
           Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-14" />)
         ) : (
           agents.map((a) => (
-            <GlassCard key={a.id} className={`p-3 flex items-center gap-3 ${a.active ? "" : "opacity-60"}`}>
+            <GlassCard
+              key={a.id}
+              draggable
+              onDragStart={() => setDragId(a.id)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => dropOn(a.id)}
+              onDragEnd={() => setDragId(null)}
+              className={`p-3 flex items-center gap-3 ${a.active ? "" : "opacity-60"} ${
+                dragId === a.id ? "opacity-40" : ""
+              } ${dragId && dragId !== a.id ? "hover:ring-2 hover:ring-violet-400" : ""}`}
+            >
+              <GripVertical
+                size={15}
+                className="text-slate-300 shrink-0 cursor-grab active:cursor-grabbing"
+              />
               <Avatar name={a.name} url={a.avatar_url} size="sm" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
@@ -1909,13 +1962,20 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const previewScroll = useRef<HTMLDivElement>(null);
   useDragScroll(previewScroll);
 
-  const start = useMemo(() => nearestSunday(parseISO(`${month}-01`)), [month]);
+  // The month picker suggests an anchor; startOverride wins when set, so a
+  // period can begin on any date rather than the computed Sunday.
+  const [startOverride, setStartOverride] = useState<string | null>(null);
+  const anchor = useMemo(() => nearestSunday(parseISO(`${month}-01`)), [month]);
+  const start = useMemo(
+    () => (startOverride ? parseISO(startOverride) : anchor),
+    [startOverride, anchor],
+  );
   const end = useMemo(() => addDays(start, weeks * 7 - 1), [start, weeks]);
 
   useEffect(() => {
     let cancel = false;
     (async () => {
-      const { data } = await supabase.from("agents").select("*").eq("active", true).order("name");
+      const { data } = await supabase.from("agents").select("*").eq("active", true).order("sort_order", { ascending: true, nullsFirst: false }).order("name");
       if (cancel) return;
       const list = (data as Agent[] | null) ?? [];
       setAgents(list);
@@ -2018,7 +2078,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       }
       const res = generateSchedule({
         agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
-        startSunday: from,
+        startDate: from,
         weeks,
         gyPool,
         fixedShift: fixed,
@@ -2142,7 +2202,16 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold text-slate-500">Month</label>
             <input
-              type="month" value={month} onChange={(e) => { setMonth(e.target.value); setPreview(null); }}
+              type="month" value={month}
+              onChange={(e) => { setMonth(e.target.value); setStartOverride(null); setPreview(null); }}
+              className="glass rounded-xl px-3 py-2 text-sm outline-none"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-slate-500">Start date</label>
+            <input
+              type="date" value={format(start, "yyyy-MM-dd")}
+              onChange={(e) => { setStartOverride(e.target.value || null); setPreview(null); }}
               className="glass rounded-xl px-3 py-2 text-sm outline-none"
             />
           </div>
@@ -2164,6 +2233,14 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             <div className="text-sm font-bold text-violet-800">
               {format(start, "EEE d MMM")} → {format(end, "EEE d MMM yyyy")}
             </div>
+            {startOverride && (
+              <button
+                onClick={() => { setStartOverride(null); setPreview(null); }}
+                className="text-[10px] font-semibold text-violet-600 underline mt-0.5"
+              >
+                reset to {format(anchor, "d MMM")}
+              </button>
+            )}
           </div>
         </div>
       </GlassCard>

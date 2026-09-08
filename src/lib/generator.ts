@@ -44,7 +44,7 @@ export type GenAgent = { id: string; name: string; is_lead: boolean };
 
 export type GenInput = {
   agents: GenAgent[];
-  startSunday: string; // yyyy-MM-dd, must be a Sunday
+  startDate: string; // yyyy-MM-dd, must be a Sunday
   weeks: number; // 4 or 5
   gyPool: string[]; // agent ids eligible for graveyard
   fixedShift?: Record<string, string>; // agentId -> code that never rotates
@@ -56,7 +56,7 @@ export type GenInput = {
    */
   offset?: number;
   /**
-   * Codes for the days *before* startSunday, keyed `${agentId}|${yyyy-MM-dd}`.
+   * Codes for the days *before* startDate, keyed `${agentId}|${yyyy-MM-dd}`.
    * Used to resume each agent's cycle across the month boundary rather than
    * restarting it: their off-pattern is inferred from it, and a block that was
    * already running on the 1st keeps its shift code.
@@ -240,13 +240,16 @@ function pickGyTrio(pool: GenAgent[], pairOf: Map<string, number>, seed: number)
 }
 
 export function generateSchedule(input: GenInput): GenResult {
-  const { agents, startSunday, weeks } = input;
+  const { agents, startDate, weeks } = input;
   const fixedShift = input.fixedShift ?? {};
   const leave = input.leave ?? {};
   const warnings: string[] = [];
 
-  const start = parseISO(startSunday);
-  if (start.getDay() !== 0) warnings.push("Start date is not a Sunday.");
+  const start = parseISO(startDate);
+  // Off-patterns are real weekdays, not "days since the start", so a period can
+  // begin on any day and the heavier Fri/Sat off-days still land on Fri/Sat.
+  const startDow = start.getDay();
+  const wd = (i: number) => (startDow + i) % 7;
   if (agents.length === 0) {
     warnings.push("No agents to schedule.");
   }
@@ -358,7 +361,7 @@ export function generateSchedule(input: GenInput): GenResult {
   const seedCode = new Map<string, string>();
   for (const a of sorted) {
     const p = pair.get(a.id) ?? 0;
-    const isOff = (i: number) => pairCovers(p, i % 7);
+    const isOff = (i: number) => pairCovers(p, wd(i));
     const blocks: Array<{ start: number; end: number }> = [];
     for (let i = 0; i < totalDays; ) {
       if (isOff(i)) { i++; continue; }
@@ -517,7 +520,7 @@ export function generateSchedule(input: GenInput): GenResult {
       const lv = leave[`${a.id}|${date}`];
       let code: string;
       if (lv) code = lv; // leave overrides everything, matching how the sheets read
-      else if (pairCovers(p, d % 7)) code = "OFF";
+      else if (pairCovers(p, wd(d))) code = "OFF";
       else if (fixedShift[a.id]) code = fixedShift[a.id];
       else if (bands[d] === "G") code = GY_CODE;
       else code = codeAt.get(`${a.id}|${d}`) ?? MORNING_MIX[0];

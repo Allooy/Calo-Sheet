@@ -23,6 +23,9 @@ export type Agent = {
   is_lead: boolean;
   /** CX Specialist — shown as a blue name cell in the exported sheet. */
   is_specialist: boolean;
+  /** Row position in the schedule sheet. Presentational only — the generator
+   *  sorts by name internally, so reordering never changes a schedule. */
+  sort_order: number | null;
   avatar_url: string | null;
   created_at: string;
 };

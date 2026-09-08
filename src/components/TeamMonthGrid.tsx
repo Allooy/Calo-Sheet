@@ -40,7 +40,7 @@ export function TeamMonthGrid() {
       const from = format(monthStart, "yyyy-MM-dd");
       const to = format(monthEnd, "yyyy-MM-dd");
       const [a, s] = await Promise.all([
-        supabase.from("agents").select("*").eq("active", true).order("name"),
+        supabase.from("agents").select("*").eq("active", true).order("sort_order", { ascending: true, nullsFirst: false }).order("name"),
         fetchSchedulesInRange(from, to),
       ]);
       if (cancel) return;
