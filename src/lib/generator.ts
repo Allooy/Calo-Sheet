@@ -398,14 +398,34 @@ export function generateSchedule(input: GenInput): GenResult {
   // greedy miss the clean split (with pairs 0..5 it finds {3,5,0} then is forced
   // to put an overlapping pair in the other half). The offset only decides
   // which half takes mornings, which is what rotates the load between months.
-  const leadGroupA = splitDisjoint(leads, pair, 0);
+  const disjointWithin = (ps: number[]) =>
+    ps.every((x, i) => ps.every((y, j) => i === j || !overlap(x, y)));
+  const splitHolds = (half: Set<string>) => {
+    const side = (inHalf: boolean) =>
+      leads.filter((a) => half.has(a.id) === inHalf).map((a) => pair.get(a.id) ?? 0);
+    return disjointWithin(side(true)) && disjointWithin(side(false));
+  };
+
+  let leadGroupA = splitDisjoint(leads, pair, 0);
+  // Carried-over history can leave the leads bunched onto the same days off —
+  // six leads sharing only two off-pairs means three are away together and the
+  // band they cover drops to one, whatever the split. Continuity is worth less
+  // than cover here, so re-space their days off and say so.
+  if (leads.length >= 4 && !splitHolds(leadGroupA)) {
+    const half = Math.ceil(leads.length / 2);
+    leads.forEach((a, i) => {
+      const set = i < half ? LEAD_PAIRS_A : LEAD_PAIRS_B;
+      pair.set(a.id, set[(i < half ? i : i - half) % set.length]);
+    });
+    leadGroupA = splitDisjoint(leads, pair, 0);
+    warnings.push(
+      "Shift leads' days off were re-spaced: the carried-over pattern put too many of them off together to keep 2-3 leads on each band.",
+    );
+  }
   const leadsSwapped = ((input.offset ?? 0) % 2) === 1;
   const leadMorning = new Set(
     leads.filter((a) => leadGroupA.has(a.id) !== leadsSwapped).map((a) => a.id),
   );
-  if (leads.length >= 4 && leadMorning.size < 2) {
-    warnings.push("Could not find enough leads with non-overlapping days off for morning cover.");
-  }
 
   const idxAll = new Map<string, number>();
   sorted.forEach((a, i) => idxAll.set(a.id, i));
