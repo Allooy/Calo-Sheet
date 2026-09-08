@@ -1370,7 +1370,12 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     return () => { cancel = true; };
   }, []);
 
-  const [dragId, setDragId] = useState<string | null>(null);
+  // Pointer-driven reorder. HTML5 drag-and-drop gives a ghost image that
+  // follows the cursor in both axes; this keeps the row on the vertical axis
+  // and slides the others aside to open the gap it will drop into.
+  const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const dragRef = useRef<{ from: number; startY: number; slot: number } | null>(null);
+  const [drag, setDrag] = useState<{ from: number; to: number; dy: number; slot: number } | null>(null);
 
   function openAdd() {
     setEditing(null);
@@ -1491,6 +1496,20 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
 
   /** Shift Leads, then Specialists, then Agents; alphabetical within each. */
   const rankOf = (a: Agent) => (a.is_lead ? 0 : a.is_specialist ? 1 : 2);
+
+  // Derived, not stored: comparing the live order against each sort means the
+  // label can never drift out of step with what is actually on screen.
+  const sortMode: "rank" | "name" | "custom" = useMemo(() => {
+    const same = (cmp: (x: Agent, y: Agent) => number) => {
+      const t = [...agents].sort(cmp);
+      return agents.every((a, i) => a.id === t[i].id);
+    };
+    if (agents.length < 2) return "rank";
+    if (same((x, y) => rankOf(x) - rankOf(y) || x.name.localeCompare(y.name))) return "rank";
+    if (same((x, y) => x.name.localeCompare(y.name))) return "name";
+    return "custom";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents]);
   function sortByRank() {
     const next = [...agents].sort(
       (x, y) => rankOf(x) - rankOf(y) || x.name.localeCompare(y.name),
@@ -1499,16 +1518,62 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     void persistOrder(next);
   }
 
-  function dropOn(targetId: string) {
-    if (!dragId || dragId === targetId) { setDragId(null); return; }
-    const from = agents.findIndex((a) => a.id === dragId);
-    const to = agents.findIndex((a) => a.id === targetId);
-    if (from < 0 || to < 0) { setDragId(null); return; }
+  function onGrabStart(e: React.PointerEvent, from: number) {
+    const rows = rowRefs.current;
+    const self = rows[from];
+    if (!self) return;
+    const next = rows[from + 1] ?? null;
+    const prev = rows[from - 1] ?? null;
+    // Slot height includes the flex gap, so one slot of travel equals one row.
+    const r = self.getBoundingClientRect();
+    const slot = next
+      ? next.getBoundingClientRect().top - r.top
+      : prev
+        ? r.top - prev.getBoundingClientRect().top
+        : r.height + 8;
+    dragRef.current = { from, startY: e.clientY, slot };
+    setDrag({ from, to: from, dy: 0, slot });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onGrabMove(e: React.PointerEvent) {
+    const st = dragRef.current;
+    if (!st) return;
+    const dy = e.clientY - st.startY;
+    const to = Math.max(0, Math.min(agents.length - 1, st.from + Math.round(dy / st.slot)));
+    setDrag((d) => (d ? { ...d, dy, to } : d));
+  }
+
+  function onGrabEnd() {
+    const st = dragRef.current;
+    const d = drag;
+    dragRef.current = null;
+    setDrag(null);
+    if (!st || !d || d.to === st.from) return;
     const next = [...agents];
-    next.splice(to, 0, next.splice(from, 1)[0]);
+    next.splice(d.to, 0, next.splice(st.from, 1)[0]);
     setAgents(next);
-    setDragId(null);
     void persistOrder(next);
+  }
+
+  /** Transform for row i while a drag is in flight. */
+  function rowStyle(i: number): React.CSSProperties {
+    const ease = "transform 0.18s cubic-bezier(0.22,1,0.36,1)";
+    if (!drag) return { transition: ease };
+    if (i === drag.from) {
+      return {
+        transform: `translateY(${drag.dy}px)`,
+        transition: "none", // must track the pointer exactly, not lag behind it
+        zIndex: 30,
+        position: "relative",
+        boxShadow: "0 14px 30px rgba(0,0,0,0.20)",
+      };
+    }
+    let shift = 0;
+    if (drag.from < drag.to && i > drag.from && i <= drag.to) shift = -drag.slot;
+    if (drag.from > drag.to && i < drag.from && i >= drag.to) shift = drag.slot;
+    return { transform: `translateY(${shift}px)`, transition: ease };
   }
 
   function exportAgentsCSV() {
@@ -1552,8 +1617,19 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between px-1">
-        <div className="text-xs text-slate-500">
-          {agents.length} total · {agents.filter((a) => a.active).length} active
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">
+            {agents.length} total · {agents.filter((a) => a.active).length} active
+          </span>
+          <span
+            className={`text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-0.5 ${
+              sortMode === "custom"
+                ? "bg-violet-100 text-violet-700"
+                : "bg-slate-100 text-slate-500"
+            }`}
+          >
+            {sortMode === "rank" ? "By rank" : sortMode === "name" ? "A–Z" : "Custom order"}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -1582,22 +1658,25 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
         {loading ? (
           Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-14" />)
         ) : (
-          agents.map((a) => (
+          agents.map((a, i) => (
             <GlassCard
               key={a.id}
-              draggable
-              onDragStart={() => setDragId(a.id)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => dropOn(a.id)}
-              onDragEnd={() => setDragId(null)}
-              className={`p-3 flex items-center gap-3 ${a.active ? "" : "opacity-60"} ${
-                dragId === a.id ? "opacity-40" : ""
-              } ${dragId && dragId !== a.id ? "hover:ring-2 hover:ring-violet-400" : ""}`}
+              ref={(el) => { rowRefs.current[i] = el; }}
+              className={`p-3 flex items-center gap-3 ${a.active ? "" : "opacity-60"}`}
+              style={rowStyle(i)}
             >
-              <GripVertical
-                size={15}
-                className="text-slate-300 shrink-0 cursor-grab active:cursor-grabbing"
-              />
+              <span
+                onPointerDown={(e) => onGrabStart(e, i)}
+                onPointerMove={onGrabMove}
+                onPointerUp={onGrabEnd}
+                onPointerCancel={onGrabEnd}
+                // none, so a touch drag moves the row instead of scrolling the page
+                style={{ touchAction: "none" }}
+                className="shrink-0 -m-1 p-1 cursor-grab active:cursor-grabbing"
+                aria-label={`Reorder ${a.name}`}
+              >
+                <GripVertical size={15} className="text-slate-300" />
+              </span>
               <Avatar name={a.name} url={a.avatar_url} size="sm" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">

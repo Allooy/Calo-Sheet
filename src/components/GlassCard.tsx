@@ -1,13 +1,12 @@
-import type { HTMLAttributes, ReactNode } from "react";
+import { forwardRef, type HTMLAttributes, type ReactNode } from "react";
 
-export function GlassCard({
-  children,
-  className = "",
-  hoverable = false,
-  ...rest
-}: HTMLAttributes<HTMLDivElement> & { children: ReactNode; hoverable?: boolean }) {
+export const GlassCard = forwardRef<
+  HTMLDivElement,
+  HTMLAttributes<HTMLDivElement> & { children: ReactNode; hoverable?: boolean }
+>(function GlassCard({ children, className = "", hoverable = false, ...rest }, ref) {
   return (
     <div
+      ref={ref}
       {...rest}
       className={`glass rounded-2xl ${
         hoverable
@@ -18,4 +17,4 @@ export function GlassCard({
       {children}
     </div>
   );
-}
+});
