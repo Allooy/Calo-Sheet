@@ -29,6 +29,7 @@ import {
   Sparkles,
   Star,
   GripVertical,
+  ArrowDownNarrowWide,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GlassCard } from "@/components/GlassCard";
@@ -1488,6 +1489,16 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     });
   }
 
+  /** Shift Leads, then Specialists, then Agents; alphabetical within each. */
+  const rankOf = (a: Agent) => (a.is_lead ? 0 : a.is_specialist ? 1 : 2);
+  function sortByRank() {
+    const next = [...agents].sort(
+      (x, y) => rankOf(x) - rankOf(y) || x.name.localeCompare(y.name),
+    );
+    setAgents(next);
+    void persistOrder(next);
+  }
+
   function dropOn(targetId: string) {
     if (!dragId || dragId === targetId) { setDragId(null); return; }
     const from = agents.findIndex((a) => a.id === dragId);
@@ -1545,6 +1556,13 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
           {agents.length} total · {agents.filter((a) => a.active).length} active
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={sortByRank}
+            title="Order by position: Shift Leads, Specialists, then Agents"
+            className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95"
+          >
+            <ArrowDownNarrowWide size={14} /> Sort by rank
+          </button>
           <button
             onClick={exportAgentsCSV}
             className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95"
