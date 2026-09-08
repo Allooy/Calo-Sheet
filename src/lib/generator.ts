@@ -41,6 +41,10 @@ const MAX_GY_BLOCKS = 2; // ceiling on night stretches per agent per period
 // How far below target the other band must be before an agent stays put rather
 // than alternating. Higher favours the headcount targets, lower favours rotation.
 const ROTATE_BIAS = 2;
+// Graveyard cover: never fewer than two on any night — that one is absolute and
+// outranks the rest rules — never more than three, and two wherever possible.
+const GY_MIN = 2;
+const GY_MAX = 3;
 
 export type Band = "M" | "E" | "G";
 export type GenAgent = { id: string; name: string; is_lead: boolean };
@@ -427,7 +431,8 @@ export function generateSchedule(input: GenInput): GenResult {
   // in a row: each window is drawn from the pool minus whoever just finished.
   // Each trio still has non-overlapping days off, so cover holds within a window.
   // How many on nights each weekday, from the S6 column when set.
-  const gyNeed = (weekday: number) => (cov ? (cov[weekday]?.S6 ?? 0) : 2);
+  const gyNeed = (weekday: number) =>
+    Math.min(GY_MAX, Math.max(GY_MIN, cov ? (cov[weekday]?.S6 ?? GY_MIN) : GY_MIN));
   const gyPeak = cov ? Math.max(...[0, 1, 2, 3, 4, 5, 6].map(gyNeed)) : 2;
   // One more than the peak: within a spaced trio roughly one is off each day.
   const gyPerWindow = Math.max(1, gyPeak + 1);
@@ -548,6 +553,7 @@ export function generateSchedule(input: GenInput): GenResult {
   // is a tighter constraint than the team-wide totals.
   const leadM = new Array(totalDays).fill(0);
   const leadE = new Array(totalDays).fill(0);
+  const onG = new Array(totalDays).fill(0);
   const needM = (d: number) => (cov ? sumCodes(cov[wd(d)], MORNING_CODES) : Infinity);
   const needE = (d: number) => (cov ? sumCodes(cov[wd(d)], EVENING_CODES) : Infinity);
   for (const a of sorted) {
@@ -580,7 +586,14 @@ export function generateSchedule(input: GenInput): GenResult {
       } else if (
         gyTrioFor(Math.floor(blk.start / 7)).has(a.id) &&
         !prevWasG &&
-        gyUsed < MAX_GY_BLOCKS
+        gyUsed < MAX_GY_BLOCKS &&
+        // Adding this block must not take any night it covers past the ceiling.
+        (() => {
+          for (let d = blk.start; d <= blk.end; d++) {
+            if (onG[d] + 1 > gyNeed(wd(d))) return false;
+          }
+          return true;
+        })()
       ) {
         band = "G";
         gyUsed++;
@@ -624,6 +637,7 @@ export function generateSchedule(input: GenInput): GenResult {
         prefs[d] = pref;
         if (band === "M") { onM[d]++; if (a.is_lead) leadM[d]++; }
         else if (band === "E") { onE[d]++; if (a.is_lead) leadE[d]++; }
+        else if (band === "G") onG[d]++;
       }
       prevWasG = band === "G";
       if (band !== "G") prevDayBand = band;
@@ -632,35 +646,58 @@ export function generateSchedule(input: GenInput): GenResult {
     prefByDay.set(a.id, prefs);
   }
 
-  // Rotating the graveyard trio can leave a day at the window seam short: an
-  // outgoing block ends before the incoming one starts. Promote whole blocks
-  // until every day carries at least two, so rotation never costs cover.
+  // ── graveyard cover: trim anything over the ceiling, then fill to the floor ──
+  const gyOn = (d: number) => sorted.filter((x) => bandByDay.get(x.id)![d] === "G").length;
+  const blockAround = (id: string, d: number) => {
+    const bands = bandByDay.get(id)!;
+    let s0 = d, e0 = d;
+    while (s0 > 0 && bands[s0 - 1] !== null) s0--;
+    while (e0 < totalDays - 1 && bands[e0 + 1] !== null) e0++;
+    return [s0, e0] as const;
+  };
+
+  // Trim: a night over the ceiling loses a block, but only one whose other
+  // nights can spare it.
   for (let d = 0; d < totalDays; d++) {
-    const need = Math.max(0, gyNeed(wd(d)));
-    let onNights = sorted.filter((a) => bandByDay.get(a.id)![d] === "G").length;
-    for (let guard = 0; onNights < need && guard < 8; guard++) {
-      const nightsSoFar = (id: string) =>
+    for (let guard = 0; gyOn(d) > gyNeed(wd(d)) && guard < 8; guard++) {
+      const spare = sorted.find((x) => {
+        if (bandByDay.get(x.id)![d] !== "G") return false;
+        const [s0, e0] = blockAround(x.id, d);
+        for (let y = s0; y <= e0; y++) if (gyOn(y) - 1 < GY_MIN) return false;
+        return true;
+      });
+      if (!spare) break;
+      const [s0, e0] = blockAround(spare.id, d);
+      const bands = bandByDay.get(spare.id)!;
+      const prefs = prefByDay.get(spare.id)!;
+      for (let y = s0; y <= e0; y++) { bands[y] = "M"; prefs[y] = null; }
+    }
+  }
+
+  // Fill: two a night is absolute, so this one breaks the rest rules if it must
+  // — and says whose rest it took.
+  for (let d = 0; d < totalDays; d++) {
+    const need = gyNeed(wd(d));
+    for (let guard = 0; gyOn(d) < need && guard < 8; guard++) {
+      const nights = (id: string) =>
         bandByDay.get(id)!.reduce((n, b) => n + (b === "G" ? 1 : 0), 0);
-      // Prefer someone who would not end up on nights twice running; if nobody
-      // qualifies, cover wins over the rest rule and we say so.
-      const candidates = (mode: "strict" | "overCap" | "any") =>
+      const pick = (mode: "strict" | "any") =>
         sorted
-          .filter((a) => {
-            const bands = bandByDay.get(a.id)!;
+          .filter((x) => {
+            const bands = bandByDay.get(x.id)!;
             const b = bands[d];
-            if (!(gyPool.has(a.id) && b !== null && b !== "G" && !fixedShift[a.id])) return false;
+            if (!(gyPool.has(x.id) && b !== null && b !== "G" && !fixedShift[x.id])) return false;
+            const [s0, e0] = blockAround(x.id, d);
+            // Up to the hard ceiling here, not the preferred number: a block
+            // spans five nights and would otherwise be blocked by any one of
+            // them already sitting at two, leaving the floor unreachable.
+            for (let y = s0; y <= e0; y++) if (gyOn(y) + 1 > GY_MAX) return false;
             if (mode === "any") return true;
-            // Per-agent ceiling on night stretches; only the last tier ignores it.
-            if (mode === "strict") {
-              let ownBlocks = 0;
-              for (let x = 0; x < totalDays; x++) {
-                if (bands[x] === "G" && (x === 0 || bands[x - 1] !== "G")) ownBlocks++;
-              }
-              if (ownBlocks >= MAX_GY_BLOCKS) return false;
+            let own = 0;
+            for (let y = 0; y < totalDays; y++) {
+              if (bands[y] === "G" && (y === 0 || bands[y - 1] !== "G")) own++;
             }
-            let s0 = d, e0 = d;
-            while (s0 > 0 && bands[s0 - 1] !== null) s0--;
-            while (e0 < totalDays - 1 && bands[e0 + 1] !== null) e0++;
+            if (own >= MAX_GY_BLOCKS) return false;
             let before = s0 - 1;
             while (before >= 0 && bands[before] === null) before--;
             let after = e0 + 1;
@@ -669,22 +706,31 @@ export function generateSchedule(input: GenInput): GenResult {
             if (after < totalDays && bands[after] === "G") return false;
             return true;
           })
-          .sort((x, y) => nightsSoFar(x.id) - nightsSoFar(y.id))[0];
-      // Rest rules are not broken to hit the number: fall short and name it.
-      const cand = candidates("strict");
+          .sort((x, y) => nights(x.id) - nights(y.id))[0];
+
+      let cand = pick("strict");
+      const short = gyOn(d);
+      if (!cand && short < GY_MIN) {
+        // Below the floor: cover wins over the rest rules, but never silently.
+        cand = pick("any");
+        if (cand) {
+          warnings.push(
+            `${cand.name} took an extra night stretch to keep ${GY_MIN} on nights for ${dates[d]}.`,
+          );
+        }
+      }
       if (!cand) {
-        warnings.push(
-          `Only ${onNights} on nights for ${dates[d]}, wanted ${need} — no eligible agent left without breaking the rest rules.`,
-        );
+        if (short < GY_MIN) {
+          warnings.push(`Only ${short} on nights for ${dates[d]} — no eligible agent could cover it.`);
+        } else if (short < need) {
+          warnings.push(`${short} on nights for ${dates[d]}, wanted ${need}; kept the rest rules instead.`);
+        }
         break;
       }
+      const [s0, e0] = blockAround(cand.id, d);
       const bands = bandByDay.get(cand.id)!;
       const prefs = prefByDay.get(cand.id)!;
-      let s0 = d, e0 = d;
-      while (s0 > 0 && bands[s0 - 1] !== null) s0--;
-      while (e0 < totalDays - 1 && bands[e0 + 1] !== null) e0++;
-      for (let x = s0; x <= e0; x++) { bands[x] = "G"; prefs[x] = null; }
-      onNights++;
+      for (let y = s0; y <= e0; y++) { bands[y] = "G"; prefs[y] = null; }
     }
   }
 
