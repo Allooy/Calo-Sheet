@@ -49,7 +49,7 @@ import {
 } from "@/lib/supabase";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
-import { generateSchedule, auditSchedule, type GenResult } from "@/lib/generator";
+import { generateSchedule, auditSchedule, defaultCoverage, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
 import { loadSetting, saveSetting, readCached } from "@/lib/settings";
 
 const TABS = [
@@ -1894,7 +1894,11 @@ type AutoConfig = {
   fixed?: Record<string, string>;
   sheetUrl?: string;
   sheetToken?: string;
+  coverage?: Array<Record<string, number>>;
+  useCoverage?: boolean;
 };
+const WD_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const COV_CODES = ["S1", "S2", "S3", "S4", "S5", "S6"];
 
 const nrm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
 const hits = (name: string, toks: string[]) => toks.every((t) => nrm(name).includes(t));
@@ -1945,6 +1949,8 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [weeks, setWeeks] = useState(4);
   const [keepLeave, setKeepLeave] = useState(true);
   const [continuePrev, setContinuePrev] = useState(true);
+  const [useCoverage, setUseCoverage] = useState(false);
+  const [coverage, setCoverage] = useState<Array<Record<string, number>> | null>(null);
   const [offset, setOffset] = useState(0);
   const [gyPool, setGyPool] = useState<string[]>([]);
   const [fixed, setFixed] = useState<Record<string, string>>({});
@@ -1989,6 +1995,8 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       } else {
         setGyPool(list.filter((a) => !a.is_lead && GY_DEFAULTS.some((t) => hits(a.name, t))).map((a) => a.id));
       }
+      if (saved?.coverage) setCoverage(saved.coverage);
+      if (saved?.useCoverage) setUseCoverage(true);
       if (saved?.sheetUrl) setSheetUrl(saved.sheetUrl);
       if (saved?.sheetToken) setSheetToken(saved.sheetToken);
       if (saved?.fixed) setFixed(saved.fixed);
@@ -2009,11 +2017,11 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   useEffect(() => {
     if (loading) return;
     const t = setTimeout(async () => {
-      const err = await saveSetting(CFG_KEY, { gyPool, fixed, sheetUrl, sheetToken });
+      const err = await saveSetting(CFG_KEY, { gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage });
       setCfgError(err);
     }, 800);
     return () => clearTimeout(t);
-  }, [gyPool, fixed, sheetUrl, sheetToken, loading]);
+  }, [gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage, loading]);
 
   /**
    * Push the month to Google Sheets via the Apps Script web app.
@@ -2085,6 +2093,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         leave,
         offset,
         history,
+        coverage: useCoverage ? (coverage ?? defaultCoverage(agents.length)) : null,
       });
       setPreview(res);
       if (res.warnings.length) toast.warning(`${res.warnings.length} rule warning(s)`);
@@ -2272,6 +2281,87 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             className="glass rounded-xl px-3 py-2 text-sm w-20 text-center outline-none shrink-0"
           />
         </div>
+      </GlassCard>
+
+      {/* Coverage targets */}
+      <GlassCard className="p-4 flex flex-col gap-3">
+        <Toggle
+          on={useCoverage}
+          set={(v) => {
+            setUseCoverage(v);
+            if (v && !coverage) setCoverage(defaultCoverage(agents.length));
+            setPreview(null);
+          }}
+          label="Set headcount per shift"
+          hint="Type how many people you want on each shift for each weekday. Leave off to use the pattern measured from your past sheets."
+        />
+        {useCoverage && coverage && (
+          <>
+            <div className="overflow-x-auto show-scroll">
+              <table className="text-xs border-collapse">
+                <thead>
+                  <tr>
+                    <th className="text-left px-2 py-1 font-semibold text-slate-500"> </th>
+                    {COV_CODES.map((c) => (
+                      <th key={c} className="px-1 py-1 font-bold text-center w-14" style={{ color: codeStyle(c).text }}>{c}</th>
+                    ))}
+                    <th className="px-2 py-1 text-center text-slate-500 font-semibold">Morning</th>
+                    <th className="px-2 py-1 text-center text-slate-500 font-semibold">Evening</th>
+                    <th className="px-2 py-1 text-center text-slate-500 font-semibold">Off</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {WD_LABELS.map((lbl, wd) => {
+                    const row = coverage[wd] ?? {};
+                    const m = MORNING_CODES.reduce((n, c) => n + (row[c] ?? 0), 0);
+                    const e = EVENING_CODES.reduce((n, c) => n + (row[c] ?? 0), 0);
+                    const total = m + e + (row.S6 ?? 0);
+                    const off = agents.length - total;
+                    const heavy = wd === 5 || wd === 6;
+                    return (
+                      <tr key={lbl}>
+                        <td className={`px-2 py-1 font-bold ${heavy ? "text-violet-600" : "text-slate-600"}`}>{lbl}</td>
+                        {COV_CODES.map((c) => (
+                          <td key={c} className="px-0.5 py-0.5">
+                            <input
+                              type="number" min={0} max={99} value={row[c] ?? 0}
+                              onChange={(ev) => {
+                                const v = Math.max(0, Number(ev.target.value) || 0);
+                                setCoverage((prev) => {
+                                  const next = (prev ?? defaultCoverage(agents.length)).map((r) => ({ ...r }));
+                                  next[wd] = { ...next[wd], [c]: v };
+                                  return next;
+                                });
+                                setPreview(null);
+                              }}
+                              className="glass rounded-lg w-14 px-1 py-1 text-center text-xs outline-none"
+                            />
+                          </td>
+                        ))}
+                        <td className="px-2 text-center font-bold text-slate-600">{m}</td>
+                        <td className="px-2 text-center font-bold text-slate-600">{e}</td>
+                        <td className={`px-2 text-center font-bold ${off < 0 ? "text-red-600" : "text-slate-500"}`}>{off}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => { setCoverage(defaultCoverage(agents.length)); setPreview(null); }}
+                className="text-[11px] font-semibold text-violet-600"
+              >
+                Reset to measured pattern
+              </button>
+              <span className="text-[11px] text-slate-500">
+                The daily total also decides how many are off, so Off cannot go negative.
+                Per-code numbers are met closely; band totals are aimed at, since a band is
+                held for a whole 5-day block.
+              </span>
+            </div>
+          </>
+        )}
       </GlassCard>
 
       {/* Roster rules */}

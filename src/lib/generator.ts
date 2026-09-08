@@ -62,7 +62,43 @@ export type GenInput = {
    * already running on the 1st keeps its shift code.
    */
   history?: Record<string, string>;
+  /**
+   * Wanted headcount per weekday per code, index 0 = Sunday.
+   * e.g. coverage[5] = { S1: 5, S2: 3, S4: 4, S5: 4, S6: 2 } for Friday.
+   *
+   * The daily total also fixes how many are off that day, so this replaces the
+   * measured off-curve when supplied. Per-code numbers inside a band are met
+   * exactly; band totals are aimed at, since a band is held for a whole 5-day
+   * block and cannot be retuned day by day.
+   */
+  coverage?: Array<Record<string, number>> | null;
 };
+
+export const MORNING_CODES = ["S1", "S2", "S3"];
+export const EVENING_CODES = ["S4", "S5"];
+
+const sumCodes = (row: Record<string, number> | undefined, codes: string[]) =>
+  codes.reduce((n, c) => n + (row?.[c] ?? 0), 0);
+
+/**
+ * A starting grid for a team of `n`, built from the off-curve measured in the
+ * real sheets: whoever is not off that weekday, split evenly between the two
+ * day bands with two on nights, then S1:S2 at 2:1 and S4:S5 evenly.
+ */
+export function defaultCoverage(n: number): Array<Record<string, number>> {
+  const wsum = WEEKDAY_OFF_WEIGHTS.reduce((a, b) => a + b, 0);
+  return WEEKDAY_OFF_WEIGHTS.map((w) => {
+    const off = Math.round((w / wsum) * 2 * n);
+    const working = Math.max(0, n - off);
+    const gy = Math.min(2, working);
+    const day = working - gy;
+    const morning = Math.round(day / 2);
+    const evening = day - morning;
+    const s2 = Math.round(morning / 3);
+    const s5 = Math.round(evening / 2);
+    return { S1: morning - s2, S2: s2, S3: 0, S4: evening - s5, S5: s5, S6: gy };
+  });
+}
 
 export type GenCell = { agent_id: string; date: string; shift_code: string };
 
@@ -88,6 +124,7 @@ function assignPairs(
   agents: GenAgent[],
   gyPool: Set<string>,
   known: Map<string, number> = new Map(),
+  offTarget?: number[],
 ): Map<string, number> {
   // Pairs carried over from last month are fixed; only the rest are assigned.
   const pair = new Map<string, number>(known);
@@ -106,7 +143,9 @@ function assignPairs(
   // Everyone else fills the measured weekday curve as closely as possible.
   const n = agents.length;
   const wsum = WEEKDAY_OFF_WEIGHTS.reduce((s, x) => s + x, 0);
-  const target = WEEKDAY_OFF_WEIGHTS.map((w) => (w / wsum) * 2 * n);
+  // Coverage targets pin how many work each weekday, so the rest are off.
+  // Without them, fall back to the shape measured from the real sheets.
+  const target = offTarget ?? WEEKDAY_OFF_WEIGHTS.map((w) => (w / wsum) * 2 * n);
   const cur = new Array(7).fill(0);
   for (const [, p] of pair) for (const d of PAIRS) if (pairCovers(p, d)) cur[d]++;
 
@@ -276,7 +315,34 @@ export function generateSchedule(input: GenInput): GenResult {
     carriedBy.set(a.id, c);
     if (c.pair != null) knownPairs.set(a.id, c.pair);
   }
-  const pair = assignPairs(sorted, gyPool, knownPairs);
+  const cov = input.coverage ?? null;
+  const offTarget = cov
+    ? cov.map((row) => Math.max(0, sorted.length - Object.values(row).reduce((n, v) => n + (v || 0), 0)))
+    : undefined;
+  const pair = assignPairs(sorted, gyPool, knownPairs, offTarget);
+
+  // How the working population should divide between the two day bands. A band
+  // is held for a whole block, so this steers the split rather than pinning it.
+  const wantM = cov ? cov.reduce((n, r) => n + sumCodes(r, MORNING_CODES), 0) : 1;
+  const wantE = cov ? cov.reduce((n, r) => n + sumCodes(r, EVENING_CODES), 0) : 1;
+  const morningShare = wantM + wantE > 0 ? wantM / (wantM + wantE) : 0.5;
+
+  // Everyone alternating weekly can only ever hold a 50/50 split — flip the
+  // whole team and yesterday's majority becomes today's minority. To sit at
+  // any other ratio, a slice stays put and absorbs the difference while the
+  // rest keep alternating.
+  const bandPlan = new Map<string, "M" | "E" | 0 | 1>();
+  {
+    const rot = sorted.filter((a) => !a.is_lead);
+    const n = rot.length;
+    const fixedM = Math.max(0, Math.round((morningShare - 0.5) * 2 * n));
+    const fixedE = Math.max(0, Math.round((0.5 - morningShare) * 2 * n));
+    rot.forEach((a, i) => {
+      if (i < fixedM) bandPlan.set(a.id, "M");
+      else if (i < fixedM + fixedE) bandPlan.set(a.id, "E");
+      else bandPlan.set(a.id, ((i - fixedM - fixedE) % 2) as 0 | 1);
+    });
+  }
   const poolAgents = sorted.filter((a) => gyPool.has(a.id));
   // Rotate graveyard every GY_WINDOW_WEEKS, and never give anyone two stretches
   // in a row: each window is drawn from the pool minus whoever just finished.
@@ -394,8 +460,10 @@ export function generateSchedule(input: GenInput): GenResult {
       } else if (a.is_lead) {
         band = leadMorning.has(a.id) ? "M" : "E";
       } else {
-        const group = (rotIndex.get(a.id) ?? 0) % 2;
-        band = (Math.floor(blk.start / 7) + group) % 2 === 0 ? "M" : "E";
+        const plan = bandPlan.get(a.id) ?? 0;
+        band = plan === "M" || plan === "E"
+          ? plan
+          : (Math.floor(blk.start / 7) + plan) % 2 === 0 ? "M" : "E";
       }
       // Step through the band's mix block by block. Without this a lead, whose
       // band never changes, keeps the same code every day for a month.
@@ -486,11 +554,26 @@ export function generateSchedule(input: GenInput): GenResult {
       const pool = sorted.filter(
         (a) => bandByDay.get(a.id)![d] === band && !fixedShift[a.id] && !leave[`${a.id}|${dates[d]}`],
       );
+      // Weights come from the coverage targets for this weekday when set, and
+      // from the measured mix otherwise. Either way they are scaled to however
+      // many people are actually in the band, so the day is always fully filled.
+      const row = cov?.[wd(d)];
+      const codes = band === "M" ? MORNING_CODES : EVENING_CODES;
+      const weights: Record<string, number> = {};
+      let wTotal = 0;
+      const useCov = !!row && sumCodes(row, codes) > 0;
+      for (const c of useCov ? codes : uniq) {
+        const w = useCov ? (row![c] ?? 0) : mix.filter((x) => x === c).length;
+        weights[c] = w;
+        wTotal += w;
+      }
+      const keys = Object.keys(weights).filter((c) => weights[c] > 0);
       const quota: Record<string, number> = {};
       let used = 0;
-      uniq.forEach((c, i) => {
-        const share = mix.filter((x) => x === c).length / mix.length;
-        quota[c] = i === uniq.length - 1 ? pool.length - used : Math.round(share * pool.length);
+      keys.forEach((c, i) => {
+        quota[c] = i === keys.length - 1
+          ? pool.length - used
+          : Math.round((weights[c] / wTotal) * pool.length);
         used += quota[c];
       });
       const pending: string[] = [];
