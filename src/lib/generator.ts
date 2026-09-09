@@ -92,6 +92,110 @@ const sumCodes = (row: Record<string, number> | undefined, codes: string[]) =>
  * real sheets: whoever is not off that weekday, split evenly between the two
  * day bands with two on nights, then S1:S2 at 2:1 and S4:S5 evenly.
  */
+/**
+ * Nearest workable set of daily off-counts for a team of n.
+ *
+ * x[p] = how many agents take off-pair p; off[d] = x[d] + x[d-1]. Choosing x
+ * first means the result is always achievable by construction, rather than
+ * asking for a curve and discovering afterwards that no allocation produces it.
+ * The greedy nudges one agent at a time toward the wanted shape.
+ */
+export function feasibleOff(n: number, want: number[]): { off: number[]; x: number[] } {
+  const x = new Array(7).fill(Math.floor(n / 7));
+  for (let i = 0; i < n - x.reduce((a, b) => a + b, 0); i++) x[i % 7]++;
+  const offOf = (v: number[]) => v.map((_, d) => v[d] + v[(d + 6) % 7]);
+  const cost = (v: number[]) =>
+    offOf(v).reduce((c, o, d) => c + (o - want[d]) ** 2, 0);
+  for (let step = 0; step < 400; step++) {
+    let best = cost(x), from = -1, to = -1;
+    for (let a = 0; a < 7; a++) {
+      if (x[a] === 0) continue;
+      for (let b = 0; b < 7; b++) {
+        if (a === b) continue;
+        x[a]--; x[b]++;
+        const c = cost(x);
+        if (c < best - 1e-9) { best = c; from = a; to = b; }
+        x[a]++; x[b]--;
+      }
+    }
+    if (from < 0) break;
+    x[from]--; x[to]++;
+  }
+  return { off: offOf(x), x };
+}
+
+/** Build one candidate grid: how deep the weekend dips, and the morning share. */
+function candidateGrid(n: number, depth: number, morningShare: number): Array<Record<string, number>> {
+  const mean = WEEKDAY_OFF_WEIGHTS.reduce((a, b) => a + b, 0) / 7;
+  const shaped = WEEKDAY_OFF_WEIGHTS.map((w) => mean + depth * (w - mean));
+  const wsum = shaped.reduce((a, b) => a + b, 0);
+  const { off } = feasibleOff(n, shaped.map((w) => (w / wsum) * 2 * n));
+  return off.map((o) => {
+    const working = Math.max(0, n - o);
+    const gy = Math.min(GY_MIN, working);
+    const day = Math.max(0, working - gy);
+    const morning = Math.round(day * morningShare);
+    const evening = day - morning;
+    const s2 = Math.round(morning / 3);
+    const s5 = Math.round(evening / 2);
+    return { S1: morning - s2, S2: s2, S3: 0, S4: evening - s5, S5: s5, S6: gy };
+  });
+}
+
+/**
+ * A headcount grid this team can actually staff.
+ *
+ * Feasible off-numbers alone are not enough — a curve can be arithmetically
+ * possible and still leave a night on one or a band without its two leads. So
+ * each candidate is generated with and scored on what actually came out, and
+ * the cleanest wins.
+ */
+export function recommendCoverage(
+  base: Omit<GenInput, "coverage">,
+): { coverage: Array<Record<string, number>>; issues: Issue[] } {
+  const n = base.agents.length;
+  let best: { coverage: Array<Record<string, number>>; issues: Issue[]; score: number } | null = null;
+  for (const depth of [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]) {
+    for (const share of [0.40, 0.43, 0.46, 0.48, 0.50, 0.53, 0.56]) {
+      const coverage = candidateGrid(n, depth, share);
+      const run = generateSchedule({ ...base, coverage });
+      const score =
+        run.issues.reduce((c, i) => c + (i.level === "broken" ? 10 : 1), 0) +
+        // a night below two, or a band below two leads, is the worst outcome
+        run.stats.gyPerDay.filter((v) => v < GY_MIN).length * 20 +
+        run.stats.morningLeadsPerDay.filter((v) => v < 2).length * 20 +
+        run.stats.eveningLeadsPerDay.filter((v) => v < 2).length * 20;
+      if (!best || score < best.score) best = { coverage, issues: run.issues, score };
+      if (score === 0) return { coverage, issues: run.issues };
+    }
+  }
+  return { coverage: best!.coverage, issues: best!.issues };
+}
+
+/** Why a grid cannot be staffed, and the closest one that can. */
+export function checkCoverage(
+  cov: Array<Record<string, number>>, n: number,
+): { ok: boolean; reason?: string; nearestOff?: number[]; askedOff: number[] } {
+  const askedOff = cov.map((r) => n - Object.values(r).reduce((a, b) => a + (b || 0), 0));
+  if (askedOff.some((o) => o < 0)) {
+    return { ok: false, askedOff, reason: "One day asks for more people than you have." };
+  }
+  if (cov.some((r) => (r.S6 ?? 0) < GY_MIN)) {
+    return { ok: false, askedOff, reason: `Nights need at least ${GY_MIN} every day.` };
+  }
+  if (cov.some((r) => (r.S6 ?? 0) > GY_MAX)) {
+    return { ok: false, askedOff, reason: `Nights cannot go above ${GY_MAX}.` };
+  }
+  if (solveOffPairs(askedOff, n)) return { ok: true, askedOff };
+  return {
+    ok: false,
+    askedOff,
+    nearestOff: feasibleOff(n, askedOff).off,
+    reason:
+      "Days off come in two consecutive days, so the number off each day is fixed once you choose how many people take each pair. No split of the team produces this exact set.",
+  };
+}
+
 export function defaultCoverage(n: number): Array<Record<string, number>> {
   const wsum = WEEKDAY_OFF_WEIGHTS.reduce((a, b) => a + b, 0);
   return WEEKDAY_OFF_WEIGHTS.map((w) => {
@@ -119,10 +223,22 @@ export type GenStats = {
   offBlocks: Record<number, number>;
 };
 
+/** One rule that did not hold, with why it happened and what to change. */
+export type Issue = {
+  rule: string;
+  level: "broken" | "short";
+  detail: string;
+  why: string;
+  fix?: string;
+  dates?: string[];
+  agents?: string[];
+};
+
 export type GenResult = {
   cells: GenCell[];
   dates: string[];
   warnings: string[];
+  issues: Issue[];
   stats: GenStats;
 };
 
@@ -823,7 +939,84 @@ export function generateSchedule(input: GenInput): GenResult {
     }
   }
 
-  return { cells, dates, warnings: warnings.concat(verify(cells, dates, sorted, gyPool)), stats: buildStats(cells, dates, sorted, gyPool) };
+  const stats = buildStats(cells, dates, sorted, gyPool);
+  const all = warnings.concat(verify(cells, dates, sorted, gyPool));
+
+  // Group the run's notes into one entry per rule, each carrying the cause and
+  // the lever that changes it — a flat list of sentences is hard to act on.
+  const issues: Issue[] = [];
+  const grab = (test: (w: string) => boolean) => all.filter(test);
+  const datesIn = (list: string[]) =>
+    Array.from(new Set(list.flatMap((w) => w.match(/\d{4}-\d{2}-\d{2}/g) ?? [])));
+  const namesIn = (list: string[]) =>
+    Array.from(new Set(list.map((w) => w.split(" took ")[0]).filter((x) => !x.includes(" "))));
+
+  const nightsShort = grab((w) => w.includes("on nights for") && w.includes("wanted"));
+  if (nightsShort.length) {
+    issues.push({
+      rule: "Graveyard headcount",
+      level: "short",
+      detail: `Asked for 3 on ${nightsShort.length} night(s) but staffed 2.`,
+      why: "A night block runs five days, so putting three on one night also puts three on the days around it. Reaching three on only some days needs someone to work nights for fewer than five days, which the 5-on/2-off pattern does not allow.",
+      fix: "Set S6 to 2 on every row for a steady two, or accept three across the whole block that covers those days.",
+      dates: datesIn(nightsShort),
+    });
+  }
+  const nightsExtra = grab((w) => w.includes("took an extra night stretch"));
+  if (nightsExtra.length) {
+    issues.push({
+      rule: "Night rest",
+      level: "broken",
+      detail: `${nightsExtra.length} agent(s) worked more night stretches than the cap allows.`,
+      why: "Two on nights is a hard floor and outranks the rest rules, so when no rested eligible agent was available someone took an extra stretch.",
+      fix: "Add people to the graveyard-eligible list so the rota has more to draw on.",
+      dates: datesIn(nightsExtra),
+      agents: nightsExtra.map((w) => w.split(" took ")[0]),
+    });
+  }
+  const leadPinned = grab((w) => w.includes("is a shift lead pinned to"));
+  if (leadPinned.length) {
+    issues.push({
+      rule: "Shift lead cover",
+      level: "broken",
+      detail: leadPinned.join(" "),
+      why: "A lead tied to a fixed code can only ever cover one band, leaving fewer leads to hold 2-3 on both.",
+      fix: "Clear that agent's fixed shift in Roster rules.",
+    });
+  }
+  const leadSpaced = grab((w) => w.includes("days off were re-spaced"));
+  if (leadSpaced.length) {
+    issues.push({
+      rule: "Shift lead cover",
+      level: "short",
+      detail: "Leads' days off were changed from last month's pattern.",
+      why: "Carried-over patterns had too many leads off on the same days, which drops a band below two leads however the bands are assigned.",
+      fix: "Nothing to do — cover was kept. Turn off 'Continue from last month' to stop inheriting the pattern.",
+    });
+  }
+  const infeasible = grab((w) => w.includes("cannot be built from 5-on/2-off"));
+  if (infeasible.length) {
+    issues.push({
+      rule: "Headcount grid",
+      level: "broken",
+      detail: "The daily totals cannot be produced by this rotation.",
+      why: "Days off come in two consecutive days, so the number off each day follows from how many people take each pair. No split of the team gives this exact set of totals.",
+      fix: "Use 'Suggest workable numbers' to fill the grid with the closest set that can be staffed.",
+    });
+  }
+  const covered = new Set([...nightsShort, ...nightsExtra, ...leadPinned, ...leadSpaced, ...infeasible]);
+  for (const w of all) {
+    if (covered.has(w)) continue;
+    issues.push({
+      rule: "Cover",
+      level: "short",
+      detail: w,
+      why: "The rotation could not place enough people without breaking another rule.",
+      dates: datesIn([w]),
+    });
+  }
+
+  return { cells, dates, warnings: all, issues, stats };
 }
 
 function seqFor(cells: GenCell[], agentId: string, dates: string[]) {

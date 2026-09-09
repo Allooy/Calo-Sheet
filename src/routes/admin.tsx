@@ -50,7 +50,7 @@ import {
 } from "@/lib/supabase";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
-import { generateSchedule, auditSchedule, defaultCoverage, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
+import { generateSchedule, auditSchedule, defaultCoverage, recommendCoverage, checkCoverage, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
 import { loadSetting, saveSetting, readCached } from "@/lib/settings";
 
 const TABS = [
@@ -2442,7 +2442,60 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                 </tbody>
               </table>
             </div>
-            <div className="flex items-center gap-3">
+            {(() => {
+              const v = checkCoverage(coverage, agents.length);
+              return (
+                <div
+                  className={`rounded-xl px-3 py-2 text-[11px] border ${
+                    v.ok
+                      ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                      : "bg-amber-50 border-amber-200 text-amber-800"
+                  }`}
+                >
+                  {v.ok ? (
+                    <span className="font-semibold">These numbers can be staffed by your {agents.length} agents.</span>
+                  ) : (
+                    <>
+                      <span className="font-semibold">Not achievable. </span>
+                      {v.reason}
+                      {v.nearestOff && (
+                        <div className="mt-1">
+                          Closest off-per-day this rotation can produce:{" "}
+                          <span className="font-mono font-semibold">
+                            {WD_LABELS.map((l, i) => `${l} ${v.nearestOff![i]}`).join("  ")}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={() => {
+                  // Scored by actually generating with each candidate, so the
+                  // suggestion is one that produced a clean month for this team.
+                  const { coverage: best, issues } = recommendCoverage({
+                    agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+                    startDate: format(start, "yyyy-MM-dd"),
+                    weeks,
+                    gyPool,
+                    fixedShift: fixed,
+                    offset,
+                  });
+                  setCoverage(best);
+                  setPreview(null);
+                  toast[issues.length ? "message" : "success"](
+                    issues.length
+                      ? `Closest workable numbers — ${issues.length} rule note(s) remain`
+                      : "Found numbers that satisfy every rule",
+                  );
+                }}
+                className="rounded-xl bg-violet-600 text-white px-3 py-1.5 text-[11px] font-bold active:scale-95"
+              >
+                Suggest workable numbers
+              </button>
               <button
                 onClick={() => { setCoverage(defaultCoverage(agents.length)); setPreview(null); }}
                 className="text-[11px] font-semibold text-violet-600"
@@ -2722,12 +2775,52 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             </table>
           </div>
 
-          {(audit?.warnings.length ?? 0) > 0 && (
-            <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 flex flex-col gap-1">
-              {audit!.warnings.map((w) => (
-                <div key={w} className="text-[11px] text-amber-800">• {w}</div>
-              ))}
-            </div>
+          {(preview.issues?.length ?? 0) > 0 && (
+            <>
+              <div className="label-caps text-slate-500 mt-1">
+                Rule violations ({preview.issues.length})
+              </div>
+              <div className="flex flex-col gap-2">
+                {preview.issues.map((iss, i) => (
+                  <div
+                    key={i}
+                    className={`rounded-xl px-3 py-2 border ${
+                      iss.level === "broken"
+                        ? "bg-red-50 border-red-200"
+                        : "bg-amber-50 border-amber-200"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-0.5 ${
+                          iss.level === "broken"
+                            ? "bg-red-200 text-red-800"
+                            : "bg-amber-200 text-amber-800"
+                        }`}
+                      >
+                        {iss.level === "broken" ? "Rule broken" : "Fell short"}
+                      </span>
+                      <span className="text-xs font-bold text-slate-700">{iss.rule}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-700 mt-1">{iss.detail}</div>
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      <span className="font-semibold">Why: </span>{iss.why}
+                    </div>
+                    {iss.fix && (
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        <span className="font-semibold">Fix: </span>{iss.fix}
+                      </div>
+                    )}
+                    {iss.dates && iss.dates.length > 0 && (
+                      <div className="text-[10px] text-slate-400 mt-1 font-mono">
+                        {iss.dates.slice(0, 8).join("  ")}
+                        {iss.dates.length > 8 ? `  +${iss.dates.length - 8} more` : ""}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </GlassCard>
       )}
