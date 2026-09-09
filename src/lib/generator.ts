@@ -708,7 +708,12 @@ export function generateSchedule(input: GenInput): GenResult {
           for (let d = blk.start; d <= blk.end; d++) {
             if (onG[d] + 1 > gyNeed(wd(d))) return false;
           }
-          return true;
+          // A block spent mostly on leave cannot hold a night slot.
+          let awayDays = 0;
+          for (let d = blk.start; d <= blk.end; d++) {
+            if (leave[`${a.id}|${dates[d]}`]) awayDays++;
+          }
+          return awayDays === 0;
         })()
       ) {
         band = "G";
@@ -763,7 +768,11 @@ export function generateSchedule(input: GenInput): GenResult {
   }
 
   // ── graveyard cover: trim anything over the ceiling, then fill to the floor ──
-  const gyOn = (d: number) => sorted.filter((x) => bandByDay.get(x.id)![d] === "G").length;
+  // Someone on leave is not on nights, whatever band their block carries —
+  // counting them covers a night that nobody is actually working.
+  const away = (id: string, d: number) => !!leave[`${id}|${dates[d]}`];
+  const gyOn = (d: number) =>
+    sorted.filter((x) => bandByDay.get(x.id)![d] === "G" && !away(x.id, d)).length;
   const blockAround = (id: string, d: number) => {
     const bands = bandByDay.get(id)!;
     let s0 = d, e0 = d;
@@ -803,6 +812,7 @@ export function generateSchedule(input: GenInput): GenResult {
             const bands = bandByDay.get(x.id)!;
             const b = bands[d];
             if (!(gyPool.has(x.id) && b !== null && b !== "G" && !fixedShift[x.id])) return false;
+            if (away(x.id, d)) return false; // on leave that night
             const [s0, e0] = blockAround(x.id, d);
             // Up to the hard ceiling here, not the preferred number: a block
             // spans five nights and would otherwise be blocked by any one of
@@ -944,6 +954,17 @@ export function generateSchedule(input: GenInput): GenResult {
 
   // Group the run's notes into one entry per rule, each carrying the cause and
   // the lever that changes it — a flat list of sentences is hard to act on.
+  // How much of each scarce group is away — usually the real story behind a
+  // cover shortfall, and invisible from the numbers alone.
+  const awayIn = (list: GenAgent[]) =>
+    list.filter((a) => dates.some((d) => leave[`${a.id}|${d}`])).map((a) => a.name);
+  const leadsAway = awayIn(leads);
+  const nightsAway = awayIn(poolAgents);
+  const because = (group: string, names: string[], total: number) =>
+    names.length
+      ? ` ${names.length} of your ${total} ${group} are on leave this period (${names.join(", ")}), which is usually the cause.`
+      : "";
+
   const issues: Issue[] = [];
   const grab = (test: (w: string) => boolean) => all.filter(test);
   const datesIn = (list: string[]) =>
@@ -968,8 +989,10 @@ export function generateSchedule(input: GenInput): GenResult {
       rule: "Night rest",
       level: "broken",
       detail: `${nightsExtra.length} agent(s) worked more night stretches than the cap allows.`,
-      why: "Two on nights is a hard floor and outranks the rest rules, so when no rested eligible agent was available someone took an extra stretch.",
-      fix: "Add people to the graveyard-eligible list so the rota has more to draw on.",
+      why:
+        "Two on nights is a hard floor and outranks the rest rules, so when no rested eligible agent was available someone took an extra stretch." +
+        because("graveyard-eligible agents", nightsAway, poolAgents.length),
+      fix: "Add people to the graveyard-eligible list, or move some of that leave.",
       dates: datesIn(nightsExtra),
       agents: nightsExtra.map((w) => w.split(" took ")[0]),
     });
@@ -1007,11 +1030,25 @@ export function generateSchedule(input: GenInput): GenResult {
   const covered = new Set([...nightsShort, ...nightsExtra, ...leadPinned, ...leadSpaced, ...infeasible]);
   for (const w of all) {
     if (covered.has(w)) continue;
+    const isLead = w.startsWith("Morning leads") || w.startsWith("Evening leads");
+    const isNight = w.toLowerCase().includes("night") || w.startsWith("Graveyard");
     issues.push({
-      rule: "Cover",
+      rule: isLead ? "Shift lead cover" : isNight ? "Graveyard cover" : "Cover",
       level: "short",
       detail: w,
-      why: "The rotation could not place enough people without breaking another rule.",
+      why:
+        (isLead
+          ? "Each band needs 2-3 leads every day, and leads take two days off a week like everyone else."
+          : isNight
+            ? "Two on nights is the floor, drawn only from the graveyard-eligible list."
+            : "The rotation could not place enough people without breaking another rule.") +
+        (isLead ? because("shift leads", leadsAway, leads.length) : "") +
+        (isNight ? because("graveyard-eligible agents", nightsAway, poolAgents.length) : ""),
+      fix: isLead
+        ? "Mark another agent as a shift lead, or move some of that leave."
+        : isNight
+          ? "Add people to the graveyard-eligible list, or move some of that leave."
+          : undefined,
       dates: datesIn([w]),
     });
   }
