@@ -62,6 +62,7 @@ const TABS = [
   { key: "upload", label: "Upload" },
   { key: "agents", label: "Agents" },
   { key: "log", label: "Log" },
+  { key: "leave", label: "Annual Leave" },
   { key: "auto", label: "Automation" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
@@ -116,6 +117,7 @@ function AdminPage() {
           {tab === "upload" && <UploadTab adminEmail={agent.email} />}
           {tab === "agents" && <AgentsTab adminEmail={agent.email} />}
           {tab === "log" && <LogTab />}
+          {tab === "leave" && <LeaveTab adminEmail={agent.email} />}
           {tab === "auto" && <AutomationTab adminEmail={agent.email} />}
         </div>
     </div>
@@ -2043,7 +2045,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState(() => format(addMonths(new Date(), 1), "yyyy-MM"));
-  const [weeks, setWeeks] = useState(4);
+  const weeks = 4; // periods are always four weeks
   const [keepLeave, setKeepLeave] = useState(true);
   const [continuePrev, setContinuePrev] = useState(true);
   const [useCoverage, setUseCoverage] = useState(false);
@@ -2318,19 +2320,6 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
               onChange={(e) => { setStartOverride(e.target.value || null); setPreview(null); }}
               className="glass rounded-xl px-3 py-2 text-sm outline-none"
             />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold text-slate-500">Weeks</label>
-            <div className="flex gap-1">
-              {[4, 5].map((w) => (
-                <button
-                  key={w} onClick={() => { setWeeks(w); setPreview(null); }}
-                  className={`rounded-xl px-4 py-2 text-sm font-bold transition-all ${
-                    weeks === w ? "bg-violet-600 text-white shadow-sm" : "glass text-slate-600"
-                  }`}
-                >{w}</button>
-              ))}
-            </div>
           </div>
           <div className="rounded-xl bg-violet-50 border border-violet-200 px-3 py-2">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-500">Covers</div>
@@ -2824,6 +2813,190 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           )}
         </GlassCard>
       )}
+    </div>
+  );
+}
+
+/* ============ Annual Leave ============ */
+
+const LEAVE_CODES = ["AL", "SL", "DL", "Public holiday", "Birthday Off", "EID OFF"];
+type LeaveRun = { agentId: string; code: string; from: string; to: string; days: number };
+
+/**
+ * Leave is stored as ordinary schedule rows, which is what the generator
+ * already reads when "Keep existing leave" is on — so entering it here is
+ * enough for it to be honoured, including for months not yet generated.
+ */
+function LeaveTab({ adminEmail }: { adminEmail: string }) {
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [runs, setRuns] = useState<LeaveRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [agentId, setAgentId] = useState("");
+  const [code, setCode] = useState("AL");
+  const [from, setFrom] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [to, setTo] = useState(() => format(addDays(new Date(), 6), "yyyy-MM-dd"));
+
+  const windowFrom = format(addDays(new Date(), -60), "yyyy-MM-dd");
+  const windowTo = format(addDays(new Date(), 240), "yyyy-MM-dd");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [a, rows] = await Promise.all([
+      supabase.from("agents").select("*").eq("active", true)
+        .order("sort_order", { ascending: true, nullsFirst: false }).order("name"),
+      fetchSchedulesInRange(windowFrom, windowTo),
+    ]);
+    setAgents((a.data as Agent[] | null) ?? []);
+    // Collapse consecutive days of the same leave code into one run.
+    const leave = rows
+      .filter((r) => LEAVE_CODES.some((c) => c.toUpperCase() === r.shift_code.trim().toUpperCase()))
+      .sort((x, y) => x.agent_id.localeCompare(y.agent_id) || x.date.localeCompare(y.date));
+    const out: LeaveRun[] = [];
+    for (const r of leave) {
+      const last = out[out.length - 1];
+      const contiguous =
+        last &&
+        last.agentId === r.agent_id &&
+        last.code === r.shift_code &&
+        format(addDays(parseISO(last.to), 1), "yyyy-MM-dd") === r.date;
+      if (contiguous) { last.to = r.date; last.days++; }
+      else out.push({ agentId: r.agent_id, code: r.shift_code, from: r.date, to: r.date, days: 1 });
+    }
+    setRuns(out);
+    setLoading(false);
+  }, [windowFrom, windowTo]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? "Unknown";
+
+  function daysBetween(a: string, b: string) {
+    const out: string[] = [];
+    for (let d = parseISO(a); d <= parseISO(b); d = addDays(d, 1)) out.push(format(d, "yyyy-MM-dd"));
+    return out;
+  }
+
+  async function addLeave() {
+    if (!agentId) return toast.error("Pick an agent");
+    if (parseISO(to) < parseISO(from)) return toast.error("End date is before the start date");
+    const days = daysBetween(from, to);
+    if (days.length > 120) return toast.error("That range is longer than 120 days");
+    setBusy(true);
+    try {
+      // delete-then-insert, matching every other write path in the app
+      await supabase.from("schedules").delete()
+        .eq("agent_id", agentId).gte("date", from).lte("date", to);
+      const rows = days.map((d) => ({ agent_id: agentId, date: d, shift_code: code }));
+      for (let i = 0; i < rows.length; i += 500) {
+        const { error } = await supabase.from("schedules").insert(rows.slice(i, i + 500));
+        if (error) { toast.error(error.message); return; }
+      }
+      await supabase.from("audit_log").insert({
+        user_email: adminEmail, action: "leave_added",
+        details: { agent_id: agentId, code, from, to, days: days.length },
+      });
+      toast.success(`${code} set for ${nameOf(agentId)} — ${days.length} day${days.length === 1 ? "" : "s"}`);
+      await load();
+    } finally { setBusy(false); }
+  }
+
+  async function removeRun(r: LeaveRun) {
+    if (!confirm(`Remove ${r.code} for ${nameOf(r.agentId)} (${r.from} → ${r.to})?`)) return;
+    setBusy(true);
+    try {
+      await supabase.from("schedules").delete()
+        .eq("agent_id", r.agentId).gte("date", r.from).lte("date", r.to);
+      await supabase.from("audit_log").insert({
+        user_email: adminEmail, action: "leave_removed",
+        details: { agent_id: r.agentId, code: r.code, from: r.from, to: r.to },
+      });
+      toast.success("Leave removed");
+      await load();
+    } finally { setBusy(false); }
+  }
+
+  const upcoming = runs.filter((r) => parseISO(r.to) >= addDays(new Date(), -1));
+  const past = runs.length - upcoming.length;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <GlassCard className="p-4 flex flex-col gap-3">
+        <div className="label-caps text-slate-500">Add leave</div>
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="flex flex-col gap-1 min-w-[180px] flex-1">
+            <label className="text-[11px] font-semibold text-slate-500">Agent</label>
+            <select value={agentId} onChange={(e) => setAgentId(e.target.value)}
+              className="glass rounded-xl px-3 py-2 text-sm outline-none">
+              <option value="">Choose…</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-slate-500">Type</label>
+            <select value={code} onChange={(e) => setCode(e.target.value)}
+              className="glass rounded-xl px-3 py-2 text-sm outline-none">
+              {LEAVE_CODES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-slate-500">From</label>
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+              className="glass rounded-xl px-3 py-2 text-sm outline-none" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-slate-500">To</label>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+              className="glass rounded-xl px-3 py-2 text-sm outline-none" />
+          </div>
+          <button onClick={addLeave} disabled={busy}
+            className="rounded-xl bg-[#1e5a3d] text-white px-4 py-2 text-sm font-bold flex items-center gap-1.5 active:scale-95 disabled:opacity-50">
+            <Plus size={15} /> Add
+          </button>
+        </div>
+        <div className="text-[11px] text-slate-500">
+          Saved straight onto those dates, so the generator keeps them whenever
+          "Keep existing leave" is on — including for months not generated yet.
+        </div>
+      </GlassCard>
+
+      <GlassCard className="p-4 flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="label-caps text-slate-500">Upcoming leave ({upcoming.length})</span>
+          {past > 0 && <span className="text-[11px] text-slate-400">{past} past entr{past === 1 ? "y" : "ies"} hidden</span>}
+        </div>
+        {loading ? (
+          <div className="flex flex-col gap-1.5">
+            {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10" />)}
+          </div>
+        ) : upcoming.length === 0 ? (
+          <div className="text-sm text-slate-400 py-4 text-center">No leave booked.</div>
+        ) : (
+          upcoming
+            .sort((x, y) => x.from.localeCompare(y.from))
+            .map((r) => {
+              const st = codeStyle(r.code);
+              return (
+                <div key={`${r.agentId}|${r.from}|${r.code}`}
+                  className="flex items-center gap-3 rounded-xl border border-slate-100 px-3 py-2">
+                  <span className="text-[10px] font-bold uppercase rounded-full px-2 py-0.5 shrink-0"
+                    style={{ background: st.bg, color: st.text }}>
+                    {shortCode(r.code)}
+                  </span>
+                  <span className="text-sm font-semibold text-slate-700 flex-1 truncate">{nameOf(r.agentId)}</span>
+                  <span className="text-[11px] text-slate-500 shrink-0">
+                    {format(parseISO(r.from), "d MMM")} → {format(parseISO(r.to), "d MMM yyyy")}
+                    <span className="text-slate-400"> · {r.days}d</span>
+                  </span>
+                  <button onClick={() => removeRun(r)} disabled={busy}
+                    className="text-slate-300 hover:text-red-500 transition-colors shrink-0">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              );
+            })
+        )}
+      </GlassCard>
     </div>
   );
 }
