@@ -256,6 +256,17 @@ var LEGEND_FILL = {
   'OFF': '#f9f6f6', 'Annual Leave': '#d8cfc4', 'Sick Leave': '#9faa74'
 };
 
+/** Column index -> letter, for building the summary formulas. */
+function colLetter_(n) {
+  var out = '';
+  while (n > 0) { var r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = (n - r - 1) / 26; }
+  return out;
+}
+
+// Every code that can appear in a cell, in the spelling the app writes.
+var ALL_CODES = ['S1', 'S2', 'S3', 'S4', 'S5', 'S5.5', 'S6', 'OFF', 'AL', 'SL', 'DL',
+                 'Birthday Off', 'Public holiday', 'EID OFF', 'Training'];
+
 function fillFor_(code) {
   return CODE_FILL[String(code || '').trim().toUpperCase()] || null;
 }
@@ -345,10 +356,8 @@ function syncMonth_(month, weeks) {
     for (var t2 = 0; t2 < dates.length; t2++) {
       var code = byKey[agents[a].id + '|' + fmt_(dates[t2])] || '';
       values[row][t2 + 1] = code;
-      if (code) {
-        bgs[row][t2 + 1] = fillFor_(code);
-        fgs[row][t2 + 1] = inkFor_(code);
-      }
+      // Colour comes from conditional formatting, not from baked-in values, so
+      // editing a cell in the sheet recolours it immediately.
     }
   }
 
@@ -360,12 +369,12 @@ function syncMonth_(month, weeks) {
     bgs[srow][0] = SUMMARY[S].bg;
     fgs[srow][0] = '#ffffff';
     for (var t3 = 0; t3 < dates.length; t3++) {
-      var n = 0;
-      for (var a3 = 0; a3 < agents.length; a3++) {
-        var cd = String(values[HEADER_ROW + a3][t3 + 1] || '').trim().toUpperCase();
-        if (SUMMARY[S].codes.indexOf(cd) >= 0) n++;
-      }
-      values[srow][t3 + 1] = n;
+      // A live count, so changing someone from a morning code to an evening one
+      // moves the totals straight away instead of waiting for the next sync.
+      var col = colLetter_(t3 + 2);
+      var span = col + FIRST_AGENT + ':' + col + (FIRST_AGENT + agents.length - 1);
+      var list = '"' + SUMMARY[S].codes.join('","') + '"';
+      values[srow][t3 + 1] = '=SUMPRODUCT(COUNTIF(' + span + ',{' + list + '}))';
       bgs[srow][t3 + 1] = PAPER;
       fgs[srow][t3 + 1] = '#000000';
     }
@@ -403,8 +412,28 @@ function syncMonth_(month, weeks) {
   // clear() does not remove merges — break them or the next write throws
   sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).breakApart();
   var rng = sh.getRange(1, 1, nRows, nCols);
+  // setValues, not setFormulas: the array is mostly plain text and Sheets
+  // treats a leading "=" as a formula either way.
   rng.setValues(values).setBackgrounds(bgs).setFontColors(fgs)
      .setVerticalAlignment('bottom');
+
+  // ── colour by rule, so hand-edits recolour themselves ──
+  var body = sh.getRange(FIRST_AGENT, 2, Math.max(1, agents.length), nCols - 1);
+  var rules = [];
+  for (var ci = 0; ci < ALL_CODES.length; ci++) {
+    var codeText = ALL_CODES[ci];
+    var bg = fillFor_(codeText);
+    if (!bg) continue;
+    rules.push(
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenTextEqualTo(codeText)
+        .setBackground(bg)
+        .setFontColor(inkFor_(codeText))
+        .setRanges([body])
+        .build()
+    );
+  }
+  sh.setConditionalFormatRules(rules);
 
   // Typography
   rng.setFontFamily(FONT_CODE).setFontSize(11).setFontWeight('bold')
