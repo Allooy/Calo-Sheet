@@ -435,6 +435,27 @@ html.dark {
 .dark .bg-amber-50 { background-color: rgba(120, 83, 10, 0.25); }
 .dark .border-amber-200 { border-color: rgba(217, 158, 45, 0.35); }
 .dark .text-amber-700, .dark .text-amber-800 { color: #f0c26a; }
+.dark .bg-amber-200 { background-color: rgba(217, 158, 45, 0.30); }
+.dark .hover\:bg-amber-50:hover { background-color: rgba(120, 83, 10, 0.25); }
+.dark .text-amber-500 { color: #f0c26a; }
+
+/* Red: the "rule broken" card. Without these the card keeps its light pink
+   ground while the text remaps to light, which is unreadable. */
+.dark .bg-red-50 { background-color: rgba(127, 29, 29, 0.26); }
+.dark .hover\:bg-red-50:hover { background-color: rgba(127, 29, 29, 0.30); }
+.dark .bg-red-200 { background-color: rgba(248, 113, 113, 0.26); }
+.dark .border-red-200 { border-color: rgba(248, 113, 113, 0.34); }
+.dark .text-red-800, .dark .text-red-700 { color: #fca5a5; }
+.dark .text-red-600 { color: #f87171; }
+.dark .text-red-200 { color: #fecaca; }
+.dark .hover\:text-red-500:hover { color: #f87171; }
+.dark .hover\:text-red-600:hover { color: #f87171; }
+
+.dark .text-emerald-600 { color: #6fdba6; }
+.dark .bg-violet-100 { background-color: rgba(139, 92, 246, 0.26); }
+.dark .bg-violet-400 { background-color: #8b5cf6; }
+.dark .hover\:bg-blue-50:hover { background-color: rgba(59, 130, 246, 0.18); }
+
 .dark .bg-emerald-50 { background-color: rgba(16, 84, 56, 0.28); }
 .dark .border-emerald-200 { border-color: rgba(52, 168, 122, 0.35); }
 .dark .text-emerald-700 { color: #6fdba6; }
