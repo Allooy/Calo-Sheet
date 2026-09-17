@@ -52,7 +52,8 @@ export type GenAgent = { id: string; name: string; is_lead: boolean };
 export type GenInput = {
   agents: GenAgent[];
   startDate: string; // yyyy-MM-dd, must be a Sunday
-  weeks: number; // 4 or 5
+  /** Inclusive last day. The period can be any length, e.g. the 15th to the 31st. */
+  endDate: string;
   gyPool: string[]; // agent ids eligible for graveyard
   fixedShift?: Record<string, string>; // agentId -> code that never rotates
   leave?: Record<string, string>; // `${agentId}|${date}` -> AL / SL / ...
@@ -472,7 +473,7 @@ function pickGyTrio(pool: GenAgent[], pairOf: Map<string, number>, seed: number)
 }
 
 export function generateSchedule(input: GenInput): GenResult {
-  const { agents, startDate, weeks } = input;
+  const { agents, startDate, endDate } = input;
   const fixedShift = input.fixedShift ?? {};
   const leave = input.leave ?? {};
   const warnings: string[] = [];
@@ -482,6 +483,13 @@ export function generateSchedule(input: GenInput): GenResult {
   // begin on any day and the heavier Fri/Sat off-days still land on Fri/Sat.
   const startDow = start.getDay();
   const wd = (i: number) => (startDow + i) % 7;
+  const last = parseISO(endDate);
+  const totalDays = Math.max(
+    0,
+    Math.round((last.getTime() - start.getTime()) / 86400000) + 1,
+  );
+  if (totalDays === 0) warnings.push("End date is before the start date.");
+  const weeks = Math.max(1, Math.ceil(totalDays / 7)); // rota windows only
   if (agents.length === 0) {
     warnings.push("No agents to schedule.");
   }
@@ -650,7 +658,6 @@ export function generateSchedule(input: GenInput): GenResult {
   rotators.forEach((a, i) => rotIndex.set(a.id, i));
 
   const dates: string[] = [];
-  const totalDays = weeks * 7;
   for (let i = 0; i < totalDays; i++) dates.push(format(addDays(start, i), "yyyy-MM-dd"));
 
   const cells: GenCell[] = [];

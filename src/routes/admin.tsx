@@ -2045,7 +2045,6 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState(() => format(addMonths(new Date(), 1), "yyyy-MM"));
-  const weeks = 4; // periods are always four weeks
   const [keepLeave, setKeepLeave] = useState(true);
   const [continuePrev, setContinuePrev] = useState(true);
   const [useCoverage, setUseCoverage] = useState(false);
@@ -2075,7 +2074,15 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     () => (startOverride ? parseISO(startOverride) : anchor),
     [startOverride, anchor],
   );
-  const end = useMemo(() => addDays(start, weeks * 7 - 1), [start, weeks]);
+  // End defaults to four weeks from the start; an explicit end date wins, so a
+  // period can be any length — half a month, or the 15th to the 31st.
+  const [endOverride, setEndOverride] = useState<string | null>(null);
+  const end = useMemo(
+    () => (endOverride ? parseISO(endOverride) : addDays(start, 27)),
+    [endOverride, start],
+  );
+  const spanDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+  const endBeforeStart = spanDays < 1;
 
   useEffect(() => {
     let cancel = false;
@@ -2133,7 +2140,15 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       if (!silent) toast.error("Add the Web App URL and token below first");
       return;
     }
-    const payload = JSON.stringify({ token: sheetToken, month, weeks });
+    // from/to drive the updated script; month/weeks keep an older deployed
+    // script working until it is replaced.
+    const payload = JSON.stringify({
+      token: sheetToken,
+      month,
+      weeks: 4,
+      from: format(start, "yyyy-MM-dd"),
+      to: format(end, "yyyy-MM-dd"),
+    });
     const opts = { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload };
     setSyncing(true);
     try {
@@ -2184,7 +2199,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       const res = generateSchedule({
         agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
         startDate: from,
-        weeks,
+        endDate: to,
         gyPool,
         fixedShift: fixed,
         leave,
@@ -2253,7 +2268,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       toast.success(`Applied ${rows.length} shifts`);
       await supabase.from("audit_log").insert({
         user_email: adminEmail, action: "schedule_generated",
-        details: { from, to, weeks, cells: rows.length, manualEdits: edits.size },
+        details: { from, to, days: preview.dates.length, cells: rows.length, manualEdits: edits.size },
       });
       // Push straight to Sheets if it's configured; silent when it isn't.
       await pushToSheet(true);
@@ -2309,7 +2324,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             <label className="text-[11px] font-semibold text-slate-500">Month</label>
             <input
               type="month" value={month}
-              onChange={(e) => { setMonth(e.target.value); setStartOverride(null); setPreview(null); }}
+              onChange={(e) => { setMonth(e.target.value); setStartOverride(null); setEndOverride(null); setPreview(null); }}
               className="glass rounded-xl px-3 py-2 text-sm outline-none"
             />
           </div>
@@ -2321,14 +2336,24 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
               className="glass rounded-xl px-3 py-2 text-sm outline-none"
             />
           </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-semibold text-slate-500">End date</label>
+            <input
+              type="date" value={format(end, "yyyy-MM-dd")}
+              min={format(start, "yyyy-MM-dd")}
+              onChange={(e) => { setEndOverride(e.target.value || null); setPreview(null); }}
+              className={`glass rounded-xl px-3 py-2 text-sm outline-none ${endBeforeStart ? "ring-2 ring-red-400" : ""}`}
+            />
+          </div>
           <div className="rounded-xl bg-violet-50 border border-violet-200 px-3 py-2">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-500">Covers</div>
             <div className="text-sm font-bold text-violet-800">
               {format(start, "EEE d MMM")} → {format(end, "EEE d MMM yyyy")}
+              <span className="font-semibold text-violet-500"> · {Math.max(0, spanDays)} days</span>
             </div>
-            {startOverride && (
+            {(startOverride || endOverride) && (
               <button
-                onClick={() => { setStartOverride(null); setPreview(null); }}
+                onClick={() => { setStartOverride(null); setEndOverride(null); setPreview(null); }}
                 className="text-[10px] font-semibold text-violet-600 underline mt-0.5"
               >
                 reset to {format(anchor, "d MMM")}
@@ -2468,7 +2493,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                   const { coverage: best, issues } = recommendCoverage({
                     agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
                     startDate: format(start, "yyyy-MM-dd"),
-                    weeks,
+                    endDate: format(end, "yyyy-MM-dd"),
                     gyPool,
                     fixedShift: fixed,
                     offset,
@@ -2624,7 +2649,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       {/* Actions */}
       <div className="flex flex-wrap items-center gap-2">
         <button
-          onClick={runPreview} disabled={busy || loading || agents.length === 0}
+          onClick={runPreview} disabled={busy || loading || agents.length === 0 || endBeforeStart}
           className="rounded-xl px-4 py-2.5 text-sm font-bold text-white flex items-center gap-2 active:scale-95 disabled:opacity-50"
           style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7)" }}
         >
