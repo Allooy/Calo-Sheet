@@ -48,6 +48,7 @@ import {
   type ShiftRequest,
   type RequestStatus,
 } from "@/lib/supabase";
+import { parseScheduleGrid, resolveAgentNames, type GridEntry } from "@/lib/importGrid";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
 import { generateSchedule, auditSchedule, defaultCoverage, recommendCoverage, checkCoverage, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
@@ -986,84 +987,18 @@ function EditTab({ adminEmail }: { adminEmail: string }) {
 }
 
 /* ============ Upload ============ */
-type ParsedRow = { agent_name: string; date: string; shift_code: string; match?: Agent };
-
-// Parse the monthly schedule GRID (people down the rows, dates across the top,
-// title block + time legend ignored) into long-format rows. Returns null if the
-// file isn't a grid (so we can fall back to the plain long-format parser).
-const MONTHS: Record<string, number> = {
-  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+type ParsedRow = GridEntry & { match?: Agent; fuzzy?: boolean };
+type NameReport = {
+  fuzzy: { name: string; agent: Agent; reason: string; count: number }[];
+  unmatched: { name: string; count: number; candidates: string[] }[];
 };
-const pad2 = (n: number) => String(n).padStart(2, "0");
-
-function parseScheduleGrid(rows: string[][]): { agent_name: string; date: string; shift_code: string }[] | null {
-  const dayRe = /^[A-Za-z]+-(\d{1,2})$/; // "Sunday-28"
-  const isHeaderRow = (r: string[]) => r.filter((c) => dayRe.test((c || "").trim())).length >= 5;
-
-  const headerIdx = rows.findIndex(isHeaderRow);
-  if (headerIdx < 0) return null;
-
-  // Month + year from a "Jul/2026" / "July 2026" token anywhere in the file.
-  let pM: number | null = null, pY: number | null = null;
-  const monRe = /([A-Za-z]{3,9})\s*[/\-\s]\s*(\d{4})/;
-  for (const r of rows) {
-    for (const c of r) {
-      const m = (c || "").trim().match(monRe);
-      const mi = m ? MONTHS[m[1].slice(0, 3).toLowerCase()] : undefined;
-      if (m && mi !== undefined) { pM = mi; pY = parseInt(m[2], 10); break; }
-    }
-    if (pM !== null) break;
-  }
-  if (pM === null) {
-    const first = (rows[headerIdx][0] || "").trim().slice(0, 3).toLowerCase();
-    if (MONTHS[first] !== undefined) { pM = MONTHS[first]; pY = new Date().getFullYear(); }
-  }
-  if (pM === null || pY === null) return null;
-
-  // date columns
-  const headerRow = rows[headerIdx];
-  const cols: { idx: number; day: number }[] = [];
-  for (let j = 1; j < headerRow.length; j++) {
-    const m = (headerRow[j] || "").trim().match(dayRe);
-    if (m) cols.push({ idx: j, day: parseInt(m[1], 10) });
-  }
-  if (!cols.length) return null;
-
-  // map columns → ISO dates (leading days before the "1" belong to prev month;
-  // roll the month forward whenever the day number drops).
-  const idx1 = cols.findIndex((c) => c.day === 1);
-  let y = pY, mo = pM;
-  if (idx1 > 0) { mo -= 1; if (mo < 0) { mo = 11; y--; } }
-  const dateByCol = new Map<number, string>();
-  for (let k = 0; k < cols.length; k++) {
-    if (k > 0 && cols[k].day < cols[k - 1].day) { mo++; if (mo > 11) { mo = 0; y++; } }
-    dateByCol.set(cols[k].idx, `${y}-${pad2(mo + 1)}-${pad2(cols[k].day)}`);
-  }
-
-  // canonical code lookup (skips times/junk/unknown codes like "UK S1")
-  const codeByUpper = new Map<string, string>();
-  for (const c of ALL_SHIFT_CODES) codeByUpper.set(c.toUpperCase(), c);
-
-  const out: { agent_name: string; date: string; shift_code: string }[] = [];
-  for (let i = headerIdx + 1; i < rows.length; i++) {
-    const r = rows[i];
-    const name = (r[0] || "").trim();
-    if (!name || isHeaderRow(r)) continue; // skip repeated section headers
-    for (const { idx } of cols) {
-      const cell = (r[idx] || "").trim();
-      if (!cell) continue;
-      const code = codeByUpper.get(cell.toUpperCase());
-      const date = dateByCol.get(idx);
-      if (code && date) out.push({ agent_name: name, date, shift_code: code });
-    }
-  }
-  return out.length ? out : null;
-}
 
 function UploadTab({ adminEmail }: { adminEmail: string }) {
   const [drag, setDrag] = useState(false);
   const [parsed, setParsed] = useState<ParsedRow[] | null>(null);
+  const [nameReport, setNameReport] = useState<NameReport | null>(null);
+  // Fuzzy matches the admin has un-ticked; their rows are left out of the import.
+  const [rejected, setRejected] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [mode, setMode] = useState<"schedules" | "agents">("schedules");
@@ -1103,13 +1038,27 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
             date: (r.date || r.Date || "").trim(),
             shift_code: (r.shift_code || r.shift || r.Shift || "").trim(),
           }));
-      // Match by NORMALIZED name (trim + lowercase) against ALL agents, so a
-      // stray trailing space or different casing in the DB never blocks a match.
-      const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
-      const { data: agents } = await supabase.from("agents").select("*");
-      const byName = new Map<string, Agent>();
-      for (const a of (agents as Agent[] | null) ?? []) byName.set(norm(a.name), a);
-      setParsed(rows.map((r) => ({ ...r, match: byName.get(norm(r.agent_name)) })));
+      // Sheets often carry short or misspelt names ("Nora", "Hasan Alaradi");
+      // resolve them safely and show the admin every non-exact decision.
+      const { data: agents, error: agentsErr } = await supabase.from("agents").select("*");
+      if (agentsErr) return toast.error(`Couldn't load agents: ${agentsErr.message}`);
+      const resolved = resolveAgentNames(rows.map((r) => r.agent_name), (agents as Agent[] | null) ?? []);
+      const counts = new Map<string, number>();
+      for (const r of rows) counts.set(r.agent_name, (counts.get(r.agent_name) ?? 0) + 1);
+      const report: NameReport = { fuzzy: [], unmatched: [] };
+      for (const [name, m] of resolved) {
+        const count = counts.get(name) ?? 0;
+        if (m.kind === "fuzzy") report.fuzzy.push({ name, agent: m.agent, reason: m.reason, count });
+        else if (m.kind === "none") report.unmatched.push({ name, count, candidates: m.candidates.map((a) => a.name) });
+      }
+      setParsed(rows.map((r) => {
+        const m = resolved.get(r.agent_name);
+        return m && m.kind !== "none"
+          ? { ...r, match: m.agent, fuzzy: m.kind === "fuzzy" }
+          : { ...r };
+      }));
+      setNameReport(report);
+      setRejected(new Set());
       setParsedAgents(null);
     }
   }
@@ -1138,7 +1087,9 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
       return;
     }
     if (!parsed) return;
-    const valid = parsed.filter((r) => r.match && r.date && r.shift_code);
+    const valid = parsed.filter(
+      (r) => r.match && r.date && r.shift_code && !(r.fuzzy && rejected.has(r.agent_name)),
+    );
     const skipped = parsed.length - valid.length;
     if (!valid.length) {
       toast.error("No matched rows to import");
@@ -1147,52 +1098,65 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
     setImporting(true);
 
     // Dedupe payload by agent+date (last wins) so a batch never conflicts with itself.
-    const byKey = new Map<string, { agent_id: string; date: string; shift_code: string }>();
+    const byAgent = new Map<string, Map<string, string>>();
     for (const r of valid) {
-      byKey.set(`${r.match!.id}|${r.date}`, { agent_id: r.match!.id, date: r.date, shift_code: r.shift_code });
+      const m = byAgent.get(r.match!.id) ?? new Map<string, string>();
+      m.set(r.date, r.shift_code);
+      byAgent.set(r.match!.id, m);
     }
-    const payload = [...byKey.values()];
-    const agentIds = [...new Set(payload.map((p) => p.agent_id))];
-    const dates = payload.map((p) => p.date).sort();
-    const minD = dates[0];
-    const maxD = dates[dates.length - 1];
+    const total = [...byAgent.values()].reduce((n, m) => n + m.size, 0);
+    const allDates = valid.map((r) => r.date).sort();
+    const minD = allDates[0];
+    const maxD = allDates[allDates.length - 1];
 
-    // REPLACE the month: clear existing shifts for these agents in the imported
-    // range, then insert fresh. This avoids any duplicate-key conflict and makes
-    // the sheet the source of truth.
-    const { error: delErr } = await supabase
-      .from("schedules")
-      .delete()
-      .in("agent_id", agentIds)
-      .gte("date", minD)
-      .lte("date", maxD);
-    if (delErr) {
-      setImporting(false);
-      return toast.error(`Clearing old shifts failed: ${delErr.message}`);
-    }
-
+    // Replace ONLY the cells the sheet fills in. A blank cell means the sheet
+    // doesn't cover that day for that person (partial rows, leads with 28 of 35
+    // days), so clearing the whole date range would wipe shifts entered in-app.
     let ok = 0;
+    let done = 0;
     let lastError = "";
-    const chunk = 200;
-    for (let i = 0; i < payload.length; i += chunk) {
-      const slice = payload.slice(i, i + chunk);
-      const { error } = await supabase.from("schedules").insert(slice);
-      if (error) lastError = error.message;
-      else ok += slice.length;
-      setProgress(Math.round(((i + slice.length) / payload.length) * 100));
+    for (const [agent_id, cells] of byAgent) {
+      const dates = [...cells.keys()];
+      const { error: delErr } = await supabase
+        .from("schedules")
+        .delete()
+        .eq("agent_id", agent_id)
+        .in("date", dates);
+      if (delErr) {
+        lastError = `Clearing old shifts failed: ${delErr.message}`;
+      } else {
+        const rows = dates.map((date) => ({ agent_id, date, shift_code: cells.get(date)! }));
+        const { error } = await supabase.from("schedules").insert(rows);
+        if (error) lastError = error.message;
+        else ok += rows.length;
+      }
+      done += cells.size;
+      setProgress(Math.round((done / total) * 100));
     }
     setImporting(false);
     setProgress(0);
     if (lastError) {
-      toast.error(`Imported ${ok}/${payload.length}. Some failed: ${lastError}`);
+      toast.error(`Imported ${ok}/${total}. Some failed: ${lastError}`);
     } else {
       toast.success(`Imported ${ok} shifts${skipped ? ` · ${skipped} unmatched skipped` : ""}`);
     }
     setParsed(null);
+    setNameReport(null);
     await supabase.from("audit_log").insert({
       user_email: adminEmail,
       action: "schedules_imported",
-      details: { count: ok, unmatched: skipped, range: [minD, maxD] },
+      details: {
+        count: ok,
+        unmatched: skipped,
+        range: [minD, maxD],
+        fuzzy_names: (nameReport?.fuzzy ?? [])
+          .filter((f) => !rejected.has(f.name))
+          .map((f) => `${f.name} -> ${f.agent.name}`),
+        unmatched_names: [
+          ...(nameReport?.unmatched ?? []).map((u) => u.name),
+          ...[...rejected],
+        ],
+      },
     });
   }
 
@@ -1205,6 +1169,7 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
             onClick={() => {
               setMode(m);
               setParsed(null);
+              setNameReport(null);
               setParsedAgents(null);
             }}
             className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all ${
@@ -1294,7 +1259,8 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
         <GlassCard className="overflow-hidden">
           <div className="flex items-center justify-between p-3 border-b border-white/40 gap-3">
             <div className="text-sm font-semibold">
-              {parsed.length} rows · {parsed.filter((r) => r.match).length} matched
+              {parsed.length} rows ·{" "}
+              {parsed.filter((r) => r.match && !(r.fuzzy && rejected.has(r.agent_name))).length} will import
             </div>
             {importing && (
               <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
@@ -1312,6 +1278,59 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
               {importing ? "Importing…" : "Import"}
             </button>
           </div>
+          {nameReport && (nameReport.fuzzy.length > 0 || nameReport.unmatched.length > 0) && (
+            <div className="p-3 border-b border-white/40 flex flex-col gap-3 text-xs">
+              {nameReport.fuzzy.length > 0 && (
+                <div>
+                  <div className="font-semibold text-amber-700">
+                    Not an exact name match — check before importing
+                  </div>
+                  <div className="mt-1.5 flex flex-col gap-1">
+                    {nameReport.fuzzy.map((f) => (
+                      <label key={f.name} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!rejected.has(f.name)}
+                          disabled={importing}
+                          onChange={(e) => {
+                            const next = new Set(rejected);
+                            if (e.target.checked) next.delete(f.name);
+                            else next.add(f.name);
+                            setRejected(next);
+                          }}
+                        />
+                        <span>
+                          <b>{f.name}</b> → <b>{f.agent.name}</b>
+                          <span className="text-slate-500"> · by {f.reason} · {f.count} shifts</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {nameReport.unmatched.length > 0 && (
+                <div>
+                  <div className="font-semibold text-red-600">
+                    No agent found — these rows will be skipped
+                  </div>
+                  <ul className="mt-1.5 flex flex-col gap-1">
+                    {nameReport.unmatched.map((u) => (
+                      <li key={u.name}>
+                        <b>{u.name}</b>
+                        <span className="text-slate-500">
+                          {" "}· {u.count} shifts
+                          {u.candidates.length > 0 && ` · ambiguous: ${u.candidates.join(", ")}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-1 text-slate-500">
+                    Rename the row in the sheet or the agent in the Agents tab, then upload again.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <div className="max-h-96 overflow-y-auto">
             <table className="w-full text-xs">
               <tbody>
@@ -1323,13 +1342,19 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
                       <ShiftBadge code={r.shift_code} size="sm" />
                     </td>
                     <td className="p-2 text-right">
-                      <span
-                        className={`text-[10px] font-bold uppercase ${
-                          r.match ? "text-[#2d7a56]" : "text-red-600"
-                        }`}
-                      >
-                        {r.match ? "Match" : "No match"}
-                      </span>
+                      {(() => {
+                        const skip = r.fuzzy && rejected.has(r.agent_name);
+                        const [label, color] = !r.match
+                          ? ["No match", "text-red-600"]
+                          : skip
+                            ? ["Skipped", "text-slate-500"]
+                            : r.fuzzy
+                              ? [`≈ ${r.match.name}`, "text-amber-700"]
+                              : ["Match", "text-[#2d7a56]"];
+                        return (
+                          <span className={`text-[10px] font-bold uppercase ${color}`}>{label}</span>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}
