@@ -56,6 +56,14 @@ export type GenInput = {
   endDate: string;
   gyPool: string[]; // agent ids eligible for graveyard
   fixedShift?: Record<string, string>; // agentId -> code that never rotates
+  /**
+   * agentId -> weekdays (0 = Sunday) that person is always off, e.g. [1, 3] for
+   * Monday and Wednesday. They sit outside the off-pair rotation, never work
+   * nights, and are not held to the 5-on/2-off block shape.
+   */
+  fixedOff?: Record<string, number[]>;
+  /** agentId -> band the person always works; the code still moves inside it (S4 <-> S5). */
+  fixedBand?: Record<string, "M" | "E">;
   leave?: Record<string, string>; // `${agentId}|${date}` -> AL / SL / ...
   /**
    * Rotates which agent holds which off-pattern, so consecutive months don't
@@ -127,11 +135,17 @@ export function feasibleOff(n: number, want: number[]): { off: number[]; x: numb
 }
 
 /** Build one candidate grid: how deep the weekend dips, and the morning share. */
-function candidateGrid(n: number, depth: number, morningShare: number): Array<Record<string, number>> {
+function candidateGrid(
+  n: number, depth: number, morningShare: number, fixedOffOn: number[] = [0, 0, 0, 0, 0, 0, 0],
+): Array<Record<string, number>> {
   const mean = WEEKDAY_OFF_WEIGHTS.reduce((a, b) => a + b, 0) / 7;
   const shaped = WEEKDAY_OFF_WEIGHTS.map((w) => mean + depth * (w - mean));
   const wsum = shaped.reduce((a, b) => a + b, 0);
-  const { off } = feasibleOff(n, shaped.map((w) => (w / wsum) * 2 * n));
+  // People with their own days off are placed first; the pairs shape the rest.
+  const k = Math.round(fixedOffOn.reduce((a, b) => a + b, 0) / 2);
+  const m = Math.max(0, n - k);
+  const { off: pairOff } = feasibleOff(m, shaped.map((w) => (w / wsum) * 2 * m));
+  const off = pairOff.map((o, d) => o + (fixedOffOn[d] ?? 0));
   return off.map((o) => {
     const working = Math.max(0, n - o);
     const gy = Math.min(GY_MIN, working);
@@ -156,10 +170,11 @@ export function recommendCoverage(
   base: Omit<GenInput, "coverage">,
 ): { coverage: Array<Record<string, number>>; issues: Issue[] } {
   const n = base.agents.length;
+  const fixedOffOn = offCountsOf(base.fixedOff);
   let best: { coverage: Array<Record<string, number>>; issues: Issue[]; score: number } | null = null;
   for (const depth of [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]) {
     for (const share of [0.40, 0.43, 0.46, 0.48, 0.50, 0.53, 0.56]) {
-      const coverage = candidateGrid(n, depth, share);
+      const coverage = candidateGrid(n, depth, share, fixedOffOn);
       const run = generateSchedule({ ...base, coverage });
       const score =
         run.issues.reduce((c, i) => c + (i.level === "broken" ? 10 : 1), 0) +
@@ -174,10 +189,20 @@ export function recommendCoverage(
   return { coverage: best!.coverage, issues: best!.issues };
 }
 
+/** How many people with their own days off are off on each weekday. */
+export function offCountsOf(fixedOff?: Record<string, number[]>): number[] {
+  const out = [0, 0, 0, 0, 0, 0, 0];
+  for (const days of Object.values(fixedOff ?? {})) for (const d of days ?? []) if (d >= 0 && d < 7) out[d]++;
+  return out;
+}
+
 /** Why a grid cannot be staffed, and the closest one that can. */
 export function checkCoverage(
   cov: Array<Record<string, number>>, n: number,
+  fixedOff?: Record<string, number[]>,
 ): { ok: boolean; reason?: string; nearestOff?: number[]; askedOff: number[] } {
+  const fo = offCountsOf(fixedOff);
+  const k = Object.values(fixedOff ?? {}).filter((d) => d?.length).length;
   const askedOff = cov.map((r) => n - Object.values(r).reduce((a, b) => a + (b || 0), 0));
   if (askedOff.some((o) => o < 0)) {
     return { ok: false, askedOff, reason: "One day asks for more people than you have." };
@@ -188,11 +213,15 @@ export function checkCoverage(
   if (cov.some((r) => (r.S6 ?? 0) > GY_MAX)) {
     return { ok: false, askedOff, reason: `Nights cannot go above ${GY_MAX}.` };
   }
-  if (solveOffPairs(askedOff, n)) return { ok: true, askedOff };
+  const pairOff = askedOff.map((o, d) => o - fo[d]);
+  if (pairOff.some((o) => o < 0)) {
+    return { ok: false, askedOff, reason: "Fewer people off than those with fixed days off on that weekday." };
+  }
+  if (solveOffPairs(pairOff, n - k)) return { ok: true, askedOff };
   return {
     ok: false,
     askedOff,
-    nearestOff: feasibleOff(n, askedOff).off,
+    nearestOff: feasibleOff(n - k, pairOff).off.map((o, d) => o + fo[d]),
     reason:
       "Days off come in two consecutive days, so the number off each day is fixed once you choose how many people take each pair. No split of the team produces this exact set.",
   };
@@ -312,7 +341,31 @@ function assignPairs(
       });
     };
     spaced(rest.filter((a) => a.is_lead), 2);
-    spaced(rest.filter((a) => !a.is_lead && gyPool.has(a.id)), 1);
+    // The graveyard pool is what holds two on every night, so its days off are
+    // spread as evenly as the quota allows. Avoiding overlap alone runs out
+    // after three or four people, and the rest then pile onto the roomiest
+    // (weekend) pair — leaving one or two people to cover every Friday.
+    {
+      const poolOff = new Array(7).fill(0);
+      for (const [id, q] of pair) {
+        if (gyPool.has(id)) for (const d of PAIRS) if (pairCovers(q, d)) poolOff[d]++;
+      }
+      for (const a of rest.filter((x) => !x.is_lead && gyPool.has(x.id))) {
+        let best = -1, bestPeak = Infinity, bestSq = Infinity;
+        for (let q = 0; q < 7; q++) {
+          if (left[q] <= 0) continue;
+          const after = poolOff.map((v, d) => v + (pairCovers(q, d) ? 1 : 0));
+          const peak = Math.max(...after);
+          const sq = after.reduce((n, v) => n + v * v, 0);
+          if (peak < bestPeak || (peak === bestPeak && (sq < bestSq || (sq === bestSq && left[q] > left[best])))) {
+            best = q; bestPeak = peak; bestSq = sq;
+          }
+        }
+        if (best < 0) continue;
+        take(a.id, best);
+        for (const d of PAIRS) if (pairCovers(best, d)) poolOff[d]++;
+      }
+    }
     for (const a of rest.filter((x) => !pair.has(x.id))) {
       const p = roomiest();
       if (p >= 0) take(a.id, p);
@@ -478,6 +531,15 @@ export function generateSchedule(input: GenInput): GenResult {
   const fixedShift = input.fixedShift ?? {};
   const leave = input.leave ?? {};
   const warnings: string[] = [];
+  const fixedOff = input.fixedOff ?? {};
+  const offDaysOf = (id: string) => (fixedOff[id]?.length ? fixedOff[id] : null);
+  // A fixed code implies its band; otherwise an explicit band lock.
+  const lockBand = (id: string): "M" | "E" | null => {
+    const f = fixedShift[id];
+    const b = f ? bandOfCode(f) : null;
+    if (b === "M" || b === "E") return b;
+    return input.fixedBand?.[id] ?? null;
+  };
 
   const start = parseISO(startDate);
   // Off-patterns are real weekdays, not "days since the start", so a period can
@@ -498,6 +560,8 @@ export function generateSchedule(input: GenInput): GenResult {
   // Leads never work graveyard, so they can never be in the GY pool.
   const gyPool = new Set(input.gyPool);
   for (const a of agents) if (a.is_lead) gyPool.delete(a.id);
+  // Nor can anyone held to one day band or to their own days off.
+  for (const a of agents) if (lockBand(a.id) || offDaysOf(a.id)) gyPool.delete(a.id);
 
   // Sort for determinism, then rotate. Off-patterns are handed out by position
   // in this list, so rotating it moves who gets the weekend off without
@@ -521,13 +585,23 @@ export function generateSchedule(input: GenInput): GenResult {
   const offTarget = cov
     ? cov.map((row) => Math.max(0, sorted.length - Object.values(row).reduce((n, v) => n + (v || 0), 0)))
     : undefined;
-  const quota = offTarget ? solveOffPairs(offTarget, sorted.length) : null;
+  // People with their own days off are taken out first; the pairs cover what is left.
+  const pairAgents = sorted.filter((a) => !offDaysOf(a.id));
+  const fixedOffOn = [0, 1, 2, 3, 4, 5, 6].map(
+    (d) => sorted.filter((a) => offDaysOf(a.id)?.includes(d)).length,
+  );
+  const pairTarget = offTarget?.map((v, d) => Math.max(0, v - fixedOffOn[d]));
+  const quota = pairTarget ? solveOffPairs(pairTarget, pairAgents.length) : null;
   if (offTarget && !quota) {
     warnings.push(
       "That set of daily headcounts cannot be built from 5-on/2-off with two consecutive days off — the off numbers were fitted as closely as possible instead.",
     );
   }
-  const pair = assignPairs(sorted, gyPool, knownPairs, offTarget, quota);
+  const pair = assignPairs(pairAgents, gyPool, knownPairs, pairTarget, quota);
+  const offOn = (id: string, d: number) => {
+    const own = offDaysOf(id);
+    return own ? own.includes(wd(d)) : pairCovers(pair.get(id) ?? 0, wd(d));
+  };
 
   // How the working population should divide between the two day bands. A band
   // is held for a whole block, so this steers the split rather than pinning it.
@@ -681,8 +755,7 @@ export function generateSchedule(input: GenInput): GenResult {
   const needM = (d: number) => (cov ? sumCodes(cov[wd(d)], MORNING_CODES) : Infinity);
   const needE = (d: number) => (cov ? sumCodes(cov[wd(d)], EVENING_CODES) : Infinity);
   for (const a of sorted) {
-    const p = pair.get(a.id) ?? 0;
-    const isOff = (i: number) => pairCovers(p, wd(i));
+    const isOff = (i: number) => offOn(a.id, i);
     const blocks: Array<{ start: number; end: number }> = [];
     for (let i = 0; i < totalDays; ) {
       if (isOff(i)) { i++; continue; }
@@ -703,7 +776,13 @@ export function generateSchedule(input: GenInput): GenResult {
     blocks.forEach((blk, bi) => {
       let band: Band;
       let pref: string | null = null;
-      if (bi === 0 && blk.start === 0 && carried?.midBlock && carried.band) {
+      const locked = lockBand(a.id);
+      if (locked) {
+        band = locked;
+      } else if (offDaysOf(a.id)) {
+        // Their blocks don't line up with the weekly rota, so just alternate by week.
+        band = Math.floor(blk.start / 7) % 2 === ((idxAll.get(a.id) ?? 0) % 2) ? "M" : "E";
+      } else if (bi === 0 && blk.start === 0 && carried?.midBlock && carried.band) {
         band = carried.band; // finish the run that was already under way
         pref = carried.code ?? null;
         if (carried.code) seedCode.set(a.id, carried.code);
@@ -758,7 +837,7 @@ export function generateSchedule(input: GenInput): GenResult {
       // band never changes, keeps the same code every day for a month.
       // Coming off nights you step down to mornings, never straight back to
       // evenings — which is what allowed S6, evening, S6 in consecutive weeks.
-      if (prevWasG && band === "E") band = "M";
+      if (prevWasG && band === "E" && !locked) band = "M";
       if (!pref && band === "M") pref = MORNING_MIX[(ai + nM++) % MORNING_MIX.length];
       else if (!pref && band === "E") pref = EVENING_MIX[(ai + nE++) % EVENING_MIX.length];
       for (let d = blk.start; d <= blk.end; d++) {
@@ -796,7 +875,9 @@ export function generateSchedule(input: GenInput): GenResult {
   // the rest rules outrank the preferred count, and the plan already chosen is
   // kept where it is as good. Trim and fill below remain as the fallback.
   {
-    type NB = { id: string; s: number; e: number; cur: boolean; forced: boolean | null; k: number };
+    // carriedDay: a day-band week already under way from last period. It stays
+    // as it is unless the floor cannot be held any other way.
+    type NB = { id: string; s: number; e: number; cur: boolean; forced: boolean | null; k: number; carriedDay: boolean };
     const byAgent = new Map<string, NB[]>();
     const all: NB[] = [];
     const startUsed = new Map<string, number>();
@@ -813,9 +894,14 @@ export function generateSchedule(input: GenInput): GenResult {
         let working = 0;
         for (let y = d; y <= e; y++) if (!away(x.id, y)) working++;
         let forced: boolean | null = null;
-        if (d === 0 && carried?.midBlock && carried.band) forced = carried.band === "G";
+        const carriedRun = d === 0 && !!carried?.midBlock && !!carried.band;
+        if (carriedRun && carried!.band === "G") forced = true;
+        else if (carriedRun && working === 0) forced = false;
         else if (working === 0) forced = bands[d] === "G"; // all leave: nothing to cover
-        const b: NB = { id: x.id, s: d, e, cur: bands[d] === "G", forced, k: list.length };
+        const b: NB = {
+          id: x.id, s: d, e, cur: bands[d] === "G", forced, k: list.length,
+          carriedDay: carriedRun && carried!.band !== "G",
+        };
         list.push(b);
         all.push(b);
         d = e + 1;
@@ -834,7 +920,7 @@ export function generateSchedule(input: GenInput): GenResult {
     const base = dates.map((_, d) =>
       sorted.filter((x) => !byAgent.has(x.id) && bandByDay.get(x.id)![d] === "G" && !away(x.id, d)).length,
     );
-    const FLOOR = 1000, REST = 100, OFF_NEED = 1, CHANGE = 0.2;
+    const FLOOR = 1000, SWITCH = 300, REST = 100, OFF_NEED = 1, CHANGE = 0.2;
     const count = base.slice();
     const pick = new Map<NB, boolean>();
     const used = new Map(startUsed);
@@ -843,6 +929,20 @@ export function generateSchedule(input: GenInput): GenResult {
     let bestCost = Infinity;
     let nodes = 0;
     const NODE_BUDGET = 60000;
+    // How many undecided blocks could still add a night on each day. With it
+    // the search sees an unreachable floor straight away instead of after
+    // exploring everything below it.
+    const potential = dates.map(() => 0);
+    const canG = (b: NB) => b.forced !== false;
+    for (const b of all) if (canG(b)) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) potential[y]++;
+    const bound = (from: number) => {
+      let lb = 0;
+      for (let d = from; d < totalDays; d++) {
+        const reach = count[d] + potential[d];
+        if (reach < GY_MIN) lb += (GY_MIN - reach) * FLOOR;
+      }
+      return lb;
+    };
     const dayCost = (d: number) => {
       const c = count[d];
       return (c < GY_MIN ? (GY_MIN - c) * FLOOR : 0) + Math.abs(c - need[d]) * OFF_NEED;
@@ -853,12 +953,22 @@ export function generateSchedule(input: GenInput): GenResult {
       const upto = i < all.length ? all[i].s : totalDays;
       let c = cost;
       for (let d = done; d < upto; d++) c += dayCost(d);
-      if (c >= bestCost) return;
+      if (c + bound(upto) >= bestCost) return;
       if (i === all.length) { bestCost = c; best = new Map(pick); return; }
       const b = all[i];
-      const opts: boolean[] = b.forced !== null ? [b.forced] : b.cur ? [true, false] : [false, true];
+      // Needed for the floor on some day it covers? Then try nights first.
+      let needed = false;
+      if (canG(b)) {
+        for (let y = b.s; y <= b.e; y++) {
+          if (!away(b.id, y) && count[y] + potential[y] - 1 < GY_MIN) { needed = true; break; }
+        }
+      }
+      const opts: boolean[] = b.forced !== null
+        ? [b.forced]
+        : b.cur || needed ? [true, false] : [false, true];
+      if (canG(b)) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) potential[y]--;
       for (const g of opts) {
-        let add = b.forced === null && g !== b.cur ? CHANGE : 0;
+        let add = b.forced === null && g !== b.cur ? (b.carriedDay ? SWITCH : CHANGE) : 0;
         const prevG = b.k === 0 ? lastG.get(b.id)! : pick.get(byAgent.get(b.id)![b.k - 1])!;
         const u = used.get(b.id)!;
         const isNew = g && !(b.forced && b.s === 0 && carriedBy.get(b.id)?.midBlock);
@@ -879,6 +989,7 @@ export function generateSchedule(input: GenInput): GenResult {
         pick.delete(b);
         if (g) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) count[y]--;
       }
+      if (canG(b)) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) potential[y]++;
     };
     dfs(0, 0, 0);
 
@@ -892,6 +1003,11 @@ export function generateSchedule(input: GenInput): GenResult {
         let prevG = startPrevG.get(id)!;
         for (const b of list) {
           const g = plan.get(b)!;
+          if (g && b.carriedDay) {
+            warnings.push(
+              `${name} switched to nights on ${dates[b.s]}, partway through a week that started last period, to keep ${GY_MIN} on nights.`,
+            );
+          }
           if (g && b.forced === null && (prevG || u >= MAX_GY_BLOCKS)) {
             warnings.push(`${name} took an extra night stretch to keep ${GY_MIN} on nights for ${dates[b.s]}.`);
           }
@@ -1066,14 +1182,13 @@ export function generateSchedule(input: GenInput): GenResult {
 
   // Pass 3 — emit.
   for (const a of sorted) {
-    const p = pair.get(a.id) ?? 0;
     const bands = bandByDay.get(a.id)!;
     for (let d = 0; d < totalDays; d++) {
       const date = dates[d];
       const lv = leave[`${a.id}|${date}`];
       let code: string;
       if (lv) code = lv; // leave overrides everything, matching how the sheets read
-      else if (pairCovers(p, wd(d))) code = "OFF";
+      else if (offOn(a.id, d)) code = "OFF";
       else if (fixedShift[a.id]) code = fixedShift[a.id];
       else if (bands[d] === "G") code = GY_CODE;
       else code = codeAt.get(`${a.id}|${d}`) ?? MORNING_MIX[0];
@@ -1081,8 +1196,9 @@ export function generateSchedule(input: GenInput): GenResult {
     }
   }
 
-  const stats = buildStats(cells, dates, sorted, gyPool);
-  const all = warnings.concat(verify(cells, dates, sorted, gyPool));
+  const irregular = new Set(sorted.filter((a) => offDaysOf(a.id)).map((a) => a.id));
+  const stats = buildStats(cells, dates, sorted, gyPool, irregular);
+  const all = warnings.concat(verify(cells, dates, sorted, gyPool, irregular));
 
   // Group the run's notes into one entry per rule, each carrying the cause and
   // the lever that changes it — a flat list of sentences is hard to act on.
@@ -1232,15 +1348,21 @@ function kind3(k: string[]): string[][] {
  */
 export function auditSchedule(
   cells: GenCell[], dates: string[], agents: GenAgent[],
+  /** People with their own days off, left out of the block-shape check. */
+  irregularIds: string[] = [],
 ): { stats: GenStats; warnings: string[] } {
   const none = new Set<string>();
+  const skip = new Set(irregularIds);
   return {
-    stats: buildStats(cells, dates, agents, none),
-    warnings: verify(cells, dates, agents, none),
+    stats: buildStats(cells, dates, agents, none, skip),
+    warnings: verify(cells, dates, agents, none, skip),
   };
 }
 
-function buildStats(cells: GenCell[], dates: string[], agents: GenAgent[], gyPool: Set<string>): GenStats {
+function buildStats(
+  cells: GenCell[], dates: string[], agents: GenAgent[], gyPool: Set<string>,
+  irregular: Set<string> = new Set(),
+): GenStats {
   const byDate = new Map<string, GenCell[]>();
   for (const c of cells) {
     const arr = byDate.get(c.date) ?? [];
@@ -1271,6 +1393,7 @@ function buildStats(cells: GenCell[], dates: string[], agents: GenAgent[], gyPoo
   const work: Record<number, number> = {};
   const off: Record<number, number> = {};
   for (const a of agents) {
+    if (irregular.has(a.id)) continue;
     const b = blocks(seqFor(cells, a.id, dates));
     for (const [k, v] of Object.entries(b.work)) work[+k] = (work[+k] ?? 0) + v;
     for (const [k, v] of Object.entries(b.off)) off[+k] = (off[+k] ?? 0) + v;
@@ -1289,9 +1412,12 @@ function buildStats(cells: GenCell[], dates: string[], agents: GenAgent[], gyPoo
   };
 }
 
-function verify(cells: GenCell[], dates: string[], agents: GenAgent[], gyPool: Set<string>): string[] {
+function verify(
+  cells: GenCell[], dates: string[], agents: GenAgent[], gyPool: Set<string>,
+  irregular: Set<string> = new Set(),
+): string[] {
   const out: string[] = [];
-  const s = buildStats(cells, dates, agents, gyPool);
+  const s = buildStats(cells, dates, agents, gyPool, irregular);
   const bad = (arr: number[], min: number, label: string) => {
     const days = arr.filter((v) => v < min).length;
     if (days) out.push(`${label}: below ${min} on ${days} of ${arr.length} days (min ${Math.min(...arr)}).`);
