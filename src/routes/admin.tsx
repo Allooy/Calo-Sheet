@@ -30,6 +30,7 @@ import {
   Star,
   GripVertical,
   ArrowDownNarrowWide,
+  Save,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GlassCard } from "@/components/GlassCard";
@@ -1368,6 +1369,9 @@ function UploadTab({ adminEmail }: { adminEmail: string }) {
 }
 
 /* ============ Agents ============ */
+const ORDER_TEMPLATES_KEY = "cx-order-templates";
+type OrderTemplate = { name: string; ids: string[]; savedAt: string };
+
 function AgentsTab({ adminEmail }: { adminEmail: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1381,6 +1385,19 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
   const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Named row orders, shared by every admin (app_settings).
+  const [templates, setTemplates] = useState<OrderTemplate[]>(
+    () => readCached<OrderTemplate[]>(ORDER_TEMPLATES_KEY) ?? [],
+  );
+  const [naming, setNaming] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancel = false;
+    loadSetting<OrderTemplate[]>(ORDER_TEMPLATES_KEY).then((t) => {
+      if (!cancel && Array.isArray(t)) setTemplates(t);
+    });
+    return () => { cancel = true; };
+  }, []);
 
   useEffect(() => {
     let cancel = false;
@@ -1545,6 +1562,71 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     void persistOrder(next);
   }
 
+  /** A template's order over today's roster: its people first, newcomers after. */
+  function orderFrom(t: OrderTemplate): Agent[] {
+    const byId = new Map(agents.map((a) => [a.id, a]));
+    const seen = new Set<string>();
+    const head: Agent[] = [];
+    for (const id of t.ids) {
+      const a = byId.get(id);
+      if (a && !seen.has(id)) { head.push(a); seen.add(id); }
+    }
+    return [...head, ...agents.filter((a) => !seen.has(a.id))];
+  }
+  const matchingTemplate = useMemo(
+    () => templates.find((t) => orderFrom(t).every((a, i) => a.id === agents[i]?.id))?.name ?? null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [templates, agents],
+  );
+
+  async function writeTemplates(next: OrderTemplate[]) {
+    const prev = templates;
+    setTemplates(next);
+    const err = await saveSetting(ORDER_TEMPLATES_KEY, next);
+    if (err) {
+      setTemplates(prev);
+      toast.error(`Couldn't save templates: ${err}`);
+      return false;
+    }
+    return true;
+  }
+
+  function applyTemplate(name: string) {
+    const t = templates.find((x) => x.name === name);
+    if (!t) return;
+    const next = orderFrom(t);
+    setAgents(next);
+    void persistOrder(next);
+    const missing = t.ids.filter((id) => !agents.some((a) => a.id === id)).length;
+    toast.success(
+      `Applied "${t.name}"` + (missing ? ` · ${missing} removed agent(s) skipped` : ""),
+    );
+  }
+
+  async function saveTemplate() {
+    const name = (naming ?? "").trim();
+    if (!name) return toast.error("Give the template a name.");
+    const exists = templates.some((t) => t.name.toLowerCase() === name.toLowerCase());
+    if (exists && !window.confirm(`Replace the saved order "${name}" with the current order?`)) return;
+    const entry: OrderTemplate = { name, ids: agents.map((a) => a.id), savedAt: new Date().toISOString() };
+    const next = [...templates.filter((t) => t.name.toLowerCase() !== name.toLowerCase()), entry]
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (await writeTemplates(next)) {
+      setNaming(null);
+      toast.success(`Saved order "${name}"`);
+      await supabase.from("audit_log").insert({
+        user_email: adminEmail, action: "order_template_saved", details: { name, count: entry.ids.length },
+      });
+    }
+  }
+
+  async function deleteTemplate(name: string) {
+    if (!window.confirm(`Delete the saved order "${name}"? The current row order stays as it is.`)) return;
+    if (await writeTemplates(templates.filter((t) => t.name !== name))) {
+      toast.success(`Deleted "${name}"`);
+    }
+  }
+
   function onGrabStart(e: React.PointerEvent, from: number) {
     const rows = rowRefs.current;
     const self = rows[from];
@@ -1655,7 +1737,13 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
                 : "bg-slate-100 text-slate-500"
             }`}
           >
-            {sortMode === "rank" ? "By rank" : sortMode === "name" ? "A–Z" : "Custom order"}
+            {sortMode === "rank"
+              ? "By rank"
+              : sortMode === "name"
+                ? "A–Z"
+                : matchingTemplate
+                  ? `Custom · ${matchingTemplate}`
+                  : "Custom order"}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -1679,6 +1767,60 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
             <Plus size={15} /> Add agent
           </button>
         </div>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap px-1">
+        <span className="text-xs font-semibold text-slate-600">Saved orders</span>
+        <select
+          value={matchingTemplate ?? ""}
+          onChange={(e) => e.target.value && applyTemplate(e.target.value)}
+          disabled={!templates.length || loading}
+          className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-700 min-w-[180px] disabled:opacity-50"
+        >
+          <option value="">{templates.length ? "Choose a saved order…" : "No saved orders yet"}</option>
+          {templates.map((t) => (
+            <option key={t.name} value={t.name}>{t.name}</option>
+          ))}
+        </select>
+        {matchingTemplate && (
+          <button
+            onClick={() => void deleteTemplate(matchingTemplate)}
+            title="Delete this saved order"
+            className="w-8 h-8 rounded-xl glass grid place-items-center text-rose-600 active:scale-95"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+        {naming === null ? (
+          <button
+            onClick={() => setNaming(matchingTemplate ?? "")}
+            disabled={loading || agents.length < 2}
+            className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+          >
+            <Save size={14} /> Save current order…
+          </button>
+        ) : (
+          <form
+            onSubmit={(e) => { e.preventDefault(); void saveTemplate(); }}
+            className="flex items-center gap-1.5"
+          >
+            <input
+              autoFocus
+              value={naming}
+              onChange={(e) => setNaming(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Escape") setNaming(null); }}
+              placeholder="Template name, e.g. October sheet"
+              maxLength={60}
+              className="rounded-xl glass px-3 py-2 text-xs w-[220px] outline-none"
+            />
+            <button type="submit" className="rounded-xl bg-[#1e5a3d] text-white px-3 py-2 text-xs font-bold flex items-center gap-1 active:scale-95">
+              <Check size={14} /> Save
+            </button>
+            <button type="button" onClick={() => setNaming(null)} className="w-8 h-8 rounded-xl glass grid place-items-center active:scale-95" aria-label="Cancel">
+              <X size={14} />
+            </button>
+          </form>
+        )}
       </div>
 
       <div className="flex flex-col gap-2">
