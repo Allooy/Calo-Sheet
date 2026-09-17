@@ -50,6 +50,12 @@ function doPost(e) {
       var d = syncDraft(body.draftId, body.draftFrom, body.draftTo, body.rows || {});
       return out({ ok: true, tab: d.tab, agents: d.agents });
     }
+    // Apply on the website: a new "Month – Applied N" tab from the saved schedule.
+    if (body.action === 'applied') {
+      if (!ymd.test(body.appliedFrom || '') || !ymd.test(body.appliedTo || '')) return out({ ok: false, error: 'Applied needs appliedFrom/appliedTo.' });
+      var ap = syncApplied(body.appliedFrom, body.appliedTo);
+      return out({ ok: true, tab: ap.tab, agents: ap.agents });
+    }
     if (body.action) return out({ ok: false, error: 'Unknown action ' + body.action });
     if (ymd.test(body.from || '') && ymd.test(body.to || '')) {
       var nr = syncRange(body.from, body.to);
@@ -365,13 +371,21 @@ function syncDraft(draftId, from, to, rows) {
   }
 }
 
-/** The tab name for a draft: remembered per draftId, else the next free copy number. */
-function draftTabName_(ss, draftId, monthTitle) {
-  var props = PropertiesService.getScriptProperties();
-  var key = 'DRAFT_' + draftId;
-  var known = props.getProperty(key);
-  if (known) return known;
-  var prefix = monthTitle + ' – Copy ';
+/** Applied schedule (from the database) written to a brand-new tab. */
+function syncApplied(from, to) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(45000)) {
+    throw new Error('Another sync is already running; try again in a moment.');
+  }
+  try {
+    return syncRange_(from, to, null, true);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Next unused "<prefix>N" tab name. */
+function nextTabName_(ss, prefix) {
   var top = 0;
   var sheets = ss.getSheets();
   for (var i = 0; i < sheets.length; i++) {
@@ -381,7 +395,16 @@ function draftTabName_(ss, draftId, monthTitle) {
       if (n > top) top = n;
     }
   }
-  var name = prefix + (top + 1);
+  return prefix + (top + 1);
+}
+
+/** The tab name for a draft: remembered per draftId, else the next free copy number. */
+function draftTabName_(ss, draftId, monthTitle) {
+  var props = PropertiesService.getScriptProperties();
+  var key = 'DRAFT_' + draftId;
+  var known = props.getProperty(key);
+  if (known) return known;
+  var name = nextTabName_(ss, monthTitle + ' – Copy ');
   props.setProperty(key, name);
   return name;
 }
@@ -409,7 +432,7 @@ function majorityMonth_(dates) {
 }
 
 /** Writes exactly from..to (inclusive) into the tab for that range's month. */
-function syncRange_(from, to, draft) {
+function syncRange_(from, to, draft, asApplied) {
   var tz = Session.getScriptTimeZone();
   var first = parseYmd_(from);
   var last = parseYmd_(to);
@@ -533,6 +556,7 @@ function syncRange_(from, to, draft) {
   var ss = SpreadsheetApp.openById(SHEET_ID);
   var title = Utilities.formatDate(monthFirst, tz, 'MMMM yyyy');
   if (draft) title = draftTabName_(ss, draft.id, title);
+  else if (asApplied) title = nextTabName_(ss, title + ' – Applied ');
   // New tabs go at the end, so drafts never push the live month out of place.
   var sh = ss.getSheetByName(title) || ss.insertSheet(title, ss.getNumSheets());
   Logger.log('Writing tab "' + title + '"  range ' + from + ' -> ' + to +
@@ -599,6 +623,6 @@ function syncRange_(from, to, draft) {
   sh.setRowHeights(1, nRows, 21);
   sh.getRange(1, 2).setFontWeight('bold');
 
-  if (draft) return { tab: title, agents: agents.length };
+  if (draft || asApplied) return { tab: title, agents: agents.length };
   return agents.length;
 }

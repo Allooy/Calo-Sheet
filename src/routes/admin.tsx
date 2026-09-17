@@ -2369,20 +2369,24 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
    * browsers refuse to expose to fetch — so fall back to a fire-and-forget
    * no-cors post rather than reporting a false failure.
    */
-  async function pushToSheet(silent = false) {
+  /**
+   * live: rewrite the plain "Month" tab (the manual Sync button).
+   * applied: add a new "Month – Applied N" tab, never overwriting anything.
+   */
+  async function pushToSheet(silent = false, mode: "live" | "applied" = "live") {
     if (!sheetUrl || !sheetToken) {
       if (!silent) toast.error("Add the Web App URL and token below first");
       return;
     }
-    // from/to drive the updated script; month/weeks keep an older deployed
-    // script working until it is replaced.
-    const payload = JSON.stringify({
-      token: sheetToken,
-      month,
-      weeks: 4,
-      from: format(start, "yyyy-MM-dd"),
-      to: format(end, "yyyy-MM-dd"),
-    });
+    const from = format(start, "yyyy-MM-dd");
+    const to = format(end, "yyyy-MM-dd");
+    // Applied uses its own keys so an older script rejects it instead of
+    // overwriting the live tab. from/to + month/weeks drive the live sync.
+    const payload = JSON.stringify(
+      mode === "applied"
+        ? { token: sheetToken, action: "applied", appliedFrom: from, appliedTo: to }
+        : { token: sheetToken, month, weeks: 4, from, to },
+    );
     const opts = { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: payload };
     setSyncing(true);
     try {
@@ -2391,13 +2395,19 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       // the sync a second time and let two writes race on the same tab.
       const res = await fetch(sheetUrl, opts);
       const j = await res.json();
-      if (j.ok) toast.success(`Sheet updated — ${j.agents} rows for ${j.month}`);
-      else toast.error(`Sheet: ${j.error}`);
+      if (j.ok && mode === "applied" && !j.tab) {
+        toast.error("Sheet: the Apps Script is an old version — paste the new google-sheets-sync.gs and deploy a new version");
+      } else if (j.ok) {
+        toast.success(j.tab ? `Sheet: new tab "${j.tab}"` : `Sheet updated — ${j.agents} rows for ${j.month}`);
+      } else if (mode === "applied" && /month \(YYYY-MM\)|from\/to/.test(String(j.error ?? ""))) {
+        toast.error("Sheet: the Apps Script is an old version — paste the new google-sheets-sync.gs and deploy a new version");
+      } else toast.error(`Sheet: ${j.error}`);
     } catch {
-      toast.message("Sync sent to Sheets — response not readable, check the sheet");
+      toast.message("Sent to Sheets — response not readable, check the sheet");
     } finally {
       setSyncing(false);
     }
+  }
   }
 
   const leads = agents.filter((a) => a.is_lead);
@@ -2517,7 +2527,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       });
       toast.success(`${chosen.length} change(s) saved`);
       setNightCheck(null);
-      if (sheetUrl && sheetToken) await pushToSheet(true);
+      if (sheetUrl && sheetToken) await pushToSheet(true, "applied");
     } finally {
       setBusy(false);
     }
@@ -2706,7 +2716,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         details: { from, to, days: preview.dates.length, cells: rows.length, manualEdits: edits.size },
       });
       // Push straight to Sheets if it's configured; silent when it isn't.
-      await pushToSheet(true);
+      await pushToSheet(true, "applied");
     } finally {
       setBusy(false);
     }
@@ -3199,7 +3209,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         <div className="flex items-center justify-between">
           <span className="label-caps text-slate-500">Google Sheet</span>
           <span className={`text-[11px] font-semibold ${sheetUrl && sheetToken ? "text-emerald-600" : "text-slate-400"}`}>
-            {sheetUrl && sheetToken ? "Connected — syncs on Apply" : "Not connected"}
+            {sheetUrl && sheetToken ? "Connected — Generate adds a Copy tab, Apply adds an Applied tab" : "Not connected"}
           </span>
         </div>
         {cfgError && (
@@ -3226,10 +3236,11 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         <div className="flex items-center gap-2">
           <button
             onClick={() => pushToSheet(false)}
+            title="Rewrites the plain month tab (e.g. 'November 2026') from what is saved in the website"
             disabled={syncing || !sheetUrl || !sheetToken}
             className="rounded-xl glass px-3.5 py-2 text-sm font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
           >
-            <UploadIcon size={14} /> {syncing ? "Syncing…" : "Sync now"}
+            <UploadIcon size={14} /> {syncing ? "Syncing…" : "Update month tab"}
           </button>
           <span className="text-[11px] text-slate-500">
             {cfgError
