@@ -2620,8 +2620,9 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       token: sheetToken,
       action: "draft",
       draftId: draft.id,
-      from: preview.dates[0],
-      to: preview.dates[preview.dates.length - 1],
+      // Not from/to: an older script would take those as "sync the live tab".
+      draftFrom: preview.dates[0],
+      draftTo: preview.dates[preview.dates.length - 1],
       rows,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2641,8 +2642,17 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       draftSent.current = body;
       try {
         const j = await res.json();
+        const oldScript = !j.ok && /month \(YYYY-MM\)|from\/to/.test(String(j.error ?? ""));
         setDraft((d) => (d && d.id === id
-          ? j.ok ? { ...d, tab: j.tab, status: "saved" } : { ...d, status: "error", error: j.error }
+          ? j.ok && j.tab
+            ? { ...d, tab: j.tab, status: "saved" }
+            : {
+                ...d,
+                status: "error",
+                error: oldScript || (j.ok && !j.tab)
+                  ? "the Apps Script is an old version — paste the new google-sheets-sync.gs and deploy a new version"
+                  : j.error,
+              }
           : d));
       } catch {
         // Sent, but the browser can't read Google's redirected reply.

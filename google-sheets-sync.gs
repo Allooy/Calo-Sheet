@@ -42,12 +42,15 @@ function doPost(e) {
     if (!expected) return out({ ok: false, error: 'SYNC_TOKEN is not set on the script.' });
     if (body.token !== expected) return out({ ok: false, error: 'Bad token.' });
     var ymd = /^\d{4}-\d{2}-\d{2}$/;
+    // Drafts use their own date keys, so an older deployment (which would read
+    // from/to as "sync the live tab") rejects them instead.
     if (body.action === 'draft') {
-      if (!ymd.test(body.from || '') || !ymd.test(body.to || '')) return out({ ok: false, error: 'Draft needs from/to.' });
+      if (!ymd.test(body.draftFrom || '') || !ymd.test(body.draftTo || '')) return out({ ok: false, error: 'Draft needs draftFrom/draftTo.' });
       if (!/^[A-Za-z0-9-]{8,64}$/.test(body.draftId || '')) return out({ ok: false, error: 'Draft needs a draftId.' });
-      var d = syncDraft(body.draftId, body.from, body.to, body.rows || {});
+      var d = syncDraft(body.draftId, body.draftFrom, body.draftTo, body.rows || {});
       return out({ ok: true, tab: d.tab, agents: d.agents });
     }
+    if (body.action) return out({ ok: false, error: 'Unknown action ' + body.action });
     if (ymd.test(body.from || '') && ymd.test(body.to || '')) {
       var nr = syncRange(body.from, body.to);
       return out({ ok: true, month: body.from + ' to ' + body.to, agents: nr });
