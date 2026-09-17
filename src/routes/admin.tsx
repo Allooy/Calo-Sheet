@@ -50,6 +50,7 @@ import {
   type RequestStatus,
 } from "@/lib/supabase";
 import { parseScheduleGrid, resolveAgentNames, type GridEntry } from "@/lib/importGrid";
+import { parseLeaveGrid, resolveLeaveNames, aliasKey, groupLeaveRuns, type LeaveGrid, type NameAliases } from "@/lib/importLeave";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
 import { generateSchedule, auditSchedule, defaultCoverage, recommendCoverage, checkCoverage, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
@@ -3043,6 +3044,317 @@ type LeaveRun = { agentId: string; code: string; from: string; to: string; days:
  * already reads when "Keep existing leave" is on — so entering it here is
  * enough for it to be honoured, including for months not yet generated.
  */
+const ALIASES_KEY = "cx-name-aliases";
+const SKIP = "__skip__";
+
+/**
+ * Upload the team's AL sheet. The sheet is the source of truth for everyone on
+ * it: within its dates each matched person's leave is set to exactly what the
+ * sheet shows — added, changed, or removed — and nobody else is touched.
+ */
+function LeaveUploadCard({
+  agents, adminEmail, onDone,
+}: { agents: Agent[]; adminEmail: string; onDone: () => Promise<void> }) {
+  const [grid, setGrid] = useState<LeaveGrid | null>(null);
+  const [fileName, setFileName] = useState("");
+  const [aliases, setAliases] = useState<NameAliases>(() => readCached<NameAliases>(ALIASES_KEY) ?? {});
+  // Admin choices this upload: sheet name -> agent id, or SKIP.
+  const [picks, setPicks] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [showMissing, setShowMissing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    loadSetting<NameAliases>(ALIASES_KEY).then((a) => { if (a) setAliases(a); });
+  }, []);
+
+  const matches = useMemo(
+    () => (grid ? resolveLeaveNames(grid.names, agents, aliases) : new Map()),
+    [grid, agents, aliases],
+  );
+  const leaveCount = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of grid?.entries ?? []) m.set(e.name, (m.get(e.name) ?? 0) + 1);
+    return m;
+  }, [grid]);
+
+  /** Who a sheet row goes to after the admin's picks; null = skipped/unresolved. */
+  const targetOf = (n: string): string | null => {
+    const p = picks[n];
+    if (p === SKIP) return null;
+    if (p) return p;
+    const m = matches.get(n);
+    return m && "agent" in m ? m.agent.id : null;
+  };
+  // A single first-name hit is only a suggestion ("Mohsen Mohammed" -> "Mohsen Mahmood").
+  const suggestFor = (n: string) => {
+    const first = n.trim().split(/\s+/)[0]?.toLowerCase();
+    const hits = agents.filter((a) => a.name.trim().split(/\s+/)[0]?.toLowerCase() === first);
+    return hits.length === 1 ? hits[0].id : "";
+  };
+
+  const rows = grid?.names ?? [];
+  const needsPick = rows.filter((n) => {
+    const m = matches.get(n);
+    return m?.kind === "none" && (leaveCount.get(n) ?? 0) > 0 && !picks[n];
+  });
+  const guessed = rows.filter((n) => matches.get(n)?.kind === "fuzzy");
+  const missingNoLeave = rows.filter((n) => matches.get(n)?.kind === "none" && !(leaveCount.get(n) ?? 0) && !picks[n]);
+  const skipped = rows.filter((n) => matches.get(n)?.kind === "skip" || picks[n] === SKIP);
+
+  async function onFile(f: File) {
+    const text = await f.text();
+    const g = parseLeaveGrid(text);
+    if (!g.month || !g.from || !g.to) {
+      toast.error("Couldn't find the date row (e.g. 1/Oct, 2/Oct …) in that file.");
+      return;
+    }
+    setFileName(f.name);
+    setPicks({});
+    setGrid(g);
+    if (g.unknownMarkers.length) {
+      toast.warning(`Ignored unknown marks: ${g.unknownMarkers.slice(0, 6).join(", ")}`);
+    }
+  }
+
+  // Pre-fill first-name suggestions once per file.
+  useEffect(() => {
+    if (!grid) return;
+    const pre: Record<string, string> = {};
+    for (const n of grid.names) {
+      const m = matches.get(n);
+      if (m?.kind === "none" && (leaveCount.get(n) ?? 0) > 0) {
+        const s = suggestFor(n);
+        if (s) pre[n] = s;
+      }
+    }
+    if (Object.keys(pre).length) setPicks((p) => ({ ...pre, ...p }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid]);
+
+  // Final per-agent plan.
+  const plan = useMemo(() => {
+    const byAgent = new Map<string, Map<string, string>>(); // agent -> date -> code
+    if (!grid) return byAgent;
+    for (const n of grid.names) {
+      const id = targetOf(n);
+      if (!id) continue;
+      if (!byAgent.has(id)) byAgent.set(id, new Map());
+    }
+    for (const e of grid.entries) {
+      const id = targetOf(e.name);
+      if (!id) continue;
+      const days = byAgent.get(id)!;
+      if (!days.has(e.date)) days.set(e.date, e.code);
+    }
+    return byAgent;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid, matches, picks]);
+
+  const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? "Unknown";
+  const previewRuns = useMemo(() => {
+    const entries = [...plan].flatMap(([id, days]) =>
+      [...days].map(([date, code]) => ({ name: nameOf(id), date, code: code as never })),
+    );
+    return groupLeaveRuns(entries);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, agents]);
+
+  async function apply() {
+    if (!grid?.from || !grid.to) return;
+    if (needsPick.length) return toast.error("Pick who each highlighted name is first.");
+    const ids = [...plan.keys()];
+    if (!ids.length) return toast.error("No one in the sheet matched an agent.");
+    const existing = (await fetchSchedulesInRange(grid.from, grid.to)).filter((r) => plan.has(r.agent_id));
+    const isLeave = (c: string) => LEAVE_CODES.some((x) => x.toUpperCase() === c.trim().toUpperCase());
+    // Dates to clear: every existing row on a sheet leave day (overwritten), and
+    // leave the sheet no longer shows (removed). Shifts on other days stay.
+    const clear = new Map<string, string[]>();
+    let removed = 0, overwritten = 0;
+    for (const r of existing) {
+      const want = plan.get(r.agent_id)!.get(r.date);
+      if (want ? r.shift_code !== want : isLeave(r.shift_code)) {
+        if (!want) removed++; else if (!isLeave(r.shift_code)) overwritten++;
+        if (!clear.has(r.agent_id)) clear.set(r.agent_id, []);
+        clear.get(r.agent_id)!.push(r.date);
+      }
+    }
+    const have = new Set(existing.map((r) => `${r.agent_id}|${r.date}|${r.shift_code}`));
+    const inserts = [...plan].flatMap(([id, days]) =>
+      [...days]
+        .filter(([date, code]) => !have.has(`${id}|${date}|${code}`))
+        .map(([date, code]) => ({ agent_id: id, date, shift_code: code })),
+    );
+    if (!inserts.length && !removed) {
+      toast.success("Already up to date — the app matches the sheet.");
+      return;
+    }
+    const msg =
+      `Set leave for ${ids.length} people, ${format(parseISO(grid.from), "d MMM")} – ${format(parseISO(grid.to), "d MMM yyyy")}:\n` +
+      `• ${inserts.length} leave day(s) added or changed\n` +
+      `• ${removed} leave day(s) removed (no longer on the sheet)\n` +
+      (overwritten ? `• ${overwritten} scheduled shift(s) replaced by leave\n` : "") +
+      `\nThe sheet wins. Nobody outside the sheet is touched.`;
+    if (!window.confirm(msg)) return;
+
+    setBusy(true);
+    try {
+      for (const [id, dates] of clear) {
+        for (let i = 0; i < dates.length; i += 100) {
+          const { error } = await supabase.from("schedules").delete()
+            .eq("agent_id", id).in("date", dates.slice(i, i + 100));
+          if (error) { toast.error(error.message); return; }
+        }
+      }
+      for (let i = 0; i < inserts.length; i += 500) {
+        const { error } = await supabase.from("schedules").insert(inserts.slice(i, i + 500));
+        if (error) { toast.error(error.message); return; }
+      }
+      // Remember every hand pick so next month's sheet matches on its own.
+      const learned: NameAliases = { ...aliases };
+      for (const [n, v] of Object.entries(picks)) learned[aliasKey(n)] = v === SKIP ? "" : v;
+      if (JSON.stringify(learned) !== JSON.stringify(aliases)) {
+        const err = await saveSetting(ALIASES_KEY, learned);
+        if (err) toast.warning(`Leave saved, but name picks weren't remembered: ${err}`);
+        else setAliases(learned);
+      }
+      await supabase.from("audit_log").insert({
+        user_email: adminEmail, action: "leave_sheet_uploaded",
+        details: { file: fileName, from: grid.from, to: grid.to, people: ids.length, added: inserts.length, removed },
+      });
+      toast.success(`Leave updated from ${fileName}`);
+      setGrid(null);
+      setPicks({});
+      await onDone();
+    } finally { setBusy(false); }
+  }
+
+  const pickSelect = (n: string, value: string) => (
+    <select
+      value={value}
+      onChange={(e) => setPicks((p) => ({ ...p, [n]: e.target.value }))}
+      className="glass rounded-lg px-2 py-1 text-xs outline-none max-w-[200px]"
+    >
+      <option value="">Who is this?</option>
+      <option value={SKIP}>Skip — not with us</option>
+      {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+    </select>
+  );
+
+  return (
+    <GlassCard className="p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <div className="label-caps text-slate-500">Upload AL sheet</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            The CSV export of the CX ALs sheet. For everyone on it, leave in that
+            month is set to match the sheet exactly.
+          </div>
+        </div>
+        <input
+          ref={inputRef} type="file" accept=".csv,text/csv" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void onFile(f); e.target.value = ""; }}
+        />
+        <button
+          onClick={() => inputRef.current?.click()} disabled={busy || !agents.length}
+          className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-600 flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+        >
+          <UploadIcon size={14} /> {grid ? "Choose another file" : "Choose CSV"}
+        </button>
+      </div>
+
+      {grid && (
+        <>
+          <div className="text-xs text-slate-600">
+            <b>{fileName}</b> · {format(parseISO(grid.from!), "d MMM")} – {format(parseISO(grid.to!), "d MMM yyyy")} ·{" "}
+            {plan.size} people matched · {grid.entries.length} leave days in the sheet
+          </div>
+
+          {needsPick.length > 0 || Object.keys(picks).length > 0 ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 flex flex-col gap-2">
+              <div className="text-xs font-semibold text-amber-800">
+                These names have leave but aren't in the app under that name — pick who they are.
+                Your pick is remembered for next time.
+              </div>
+              {rows
+                .filter((n) => matches.get(n)?.kind === "none" && ((leaveCount.get(n) ?? 0) > 0 || picks[n]))
+                .map((n) => (
+                  <div key={n} className="flex items-center gap-2 text-xs">
+                    <span className={`flex-1 truncate ${picks[n] ? "text-slate-700" : "text-amber-800 font-semibold"}`}>
+                      {n} <span className="text-slate-400">· {leaveCount.get(n) ?? 0}d leave</span>
+                    </span>
+                    {pickSelect(n, picks[n] ?? "")}
+                  </div>
+                ))}
+            </div>
+          ) : null}
+
+          {guessed.length > 0 && (
+            <div className="rounded-xl border border-slate-200 p-3 flex flex-col gap-1.5">
+              <div className="text-xs font-semibold text-slate-600">Matched by a close name — check these</div>
+              {guessed.map((n) => {
+                const m = matches.get(n);
+                const auto = m && "agent" in m ? m.agent.id : "";
+                return (
+                  <div key={n} className="flex items-center gap-2 text-xs">
+                    <span className="flex-1 truncate text-slate-600">
+                      {n} {m?.kind === "fuzzy" && <span className="text-slate-400">· {m.reason}</span>}
+                    </span>
+                    {pickSelect(n, picks[n] ?? auto)}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {(missingNoLeave.length > 0 || skipped.length > 0) && (
+            <button
+              onClick={() => setShowMissing((v) => !v)}
+              className="text-left text-[11px] text-slate-500 hover:text-slate-700"
+            >
+              {missingNoLeave.length + skipped.length} name(s) ignored — not in the app, no leave this month
+              {skipped.length ? `, or marked as not with us` : ""} {showMissing ? "▴" : "▾"}
+              {showMissing && (
+                <div className="mt-1 text-slate-400">{[...missingNoLeave, ...skipped].join(" · ")}</div>
+              )}
+            </button>
+          )}
+
+          <div className="flex flex-col gap-1 max-h-[260px] overflow-auto show-scroll">
+            {previewRuns.length === 0 ? (
+              <div className="text-xs text-slate-400 py-2">No leave on this sheet for matched people — applying clears their leave for these dates.</div>
+            ) : previewRuns.map((r) => {
+              const st = codeStyle(r.code);
+              return (
+                <div key={`${r.name}|${r.from}|${r.code}`} className="flex items-center gap-2 text-xs rounded-lg border border-slate-100 px-2.5 py-1.5">
+                  <span className="text-[10px] font-bold uppercase rounded-full px-2 py-0.5" style={{ background: st.bg, color: st.text }}>
+                    {shortCode(r.code)}
+                  </span>
+                  <span className="flex-1 truncate font-semibold text-slate-700">{r.name}</span>
+                  <span className="text-slate-500">
+                    {format(parseISO(r.from), "d MMM")}{r.to !== r.from ? ` → ${format(parseISO(r.to), "d MMM")}` : ""} · {r.days}d
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-2 justify-end">
+            <button onClick={() => { setGrid(null); setPicks({}); }} disabled={busy}
+              className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-600 active:scale-95">
+              Cancel
+            </button>
+            <button onClick={apply} disabled={busy || needsPick.length > 0}
+              className="rounded-xl bg-[#1e5a3d] text-white px-4 py-2 text-xs font-bold flex items-center gap-1.5 active:scale-95 disabled:opacity-50">
+              <Check size={14} /> {needsPick.length ? `Pick ${needsPick.length} name(s) first` : "Apply sheet"}
+            </button>
+          </div>
+        </>
+      )}
+    </GlassCard>
+  );
+}
+
 function LeaveTab({ adminEmail }: { adminEmail: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [runs, setRuns] = useState<LeaveRun[]>([]);
@@ -3137,6 +3449,7 @@ function LeaveTab({ adminEmail }: { adminEmail: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <LeaveUploadCard agents={agents} adminEmail={adminEmail} onDone={load} />
       <GlassCard className="p-4 flex flex-col gap-3">
         <div className="label-caps text-slate-500">Add leave</div>
         <div className="flex flex-wrap items-end gap-2">
