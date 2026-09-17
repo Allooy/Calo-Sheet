@@ -2215,13 +2215,6 @@ const COV_CODES = ["S1", "S2", "S3", "S4", "S5", "S6"];
 const nrm = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
 const hits = (name: string, toks: string[]) => toks.every((t) => nrm(name).includes(t));
 
-/** The Sunday closest to the 1st — reproduces how the real sheets were anchored. */
-function nearestSunday(d: Date) {
-  const dow = d.getDay();
-  const fwd = (7 - dow) % 7;
-  return dow <= fwd ? addDays(d, -dow) : addDays(d, fwd);
-}
-
 function Toggle({ on, set, label, hint }: {
   on: boolean; set: (v: boolean) => void; label: string; hint?: string;
 }) {
@@ -2285,10 +2278,10 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const previewScroll = useRef<HTMLDivElement>(null);
   useDragScroll(previewScroll);
 
-  // The month picker suggests an anchor; startOverride wins when set, so a
-  // period can begin on any date rather than the computed Sunday.
+  // The period defaults to the 1st–28th of the chosen month; startOverride wins
+  // when set, so a period can begin on any date.
   const [startOverride, setStartOverride] = useState<string | null>(null);
-  const anchor = useMemo(() => nearestSunday(parseISO(`${month}-01`)), [month]);
+  const anchor = useMemo(() => parseISO(`${month}-01`), [month]);
   const start = useMemo(
     () => (startOverride ? parseISO(startOverride) : anchor),
     [startOverride, anchor],
@@ -2720,7 +2713,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                 onClick={() => { setStartOverride(null); setEndOverride(null); setPreview(null); }}
                 className="text-[10px] font-semibold text-violet-600 underline mt-0.5"
               >
-                reset to {format(anchor, "d MMM")}
+                reset to {format(anchor, "d")}–{format(addDays(anchor, 27), "d MMM")}
               </button>
             )}
           </div>
