@@ -2020,6 +2020,8 @@ type AutoConfig = {
   sheetToken?: string;
   coverage?: Array<Record<string, number>>;
   useCoverage?: boolean;
+  /** Off by default: leads' shifts are kept by hand in a separate sheet tab. */
+  generateLeads?: boolean;
 };
 const WD_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const COV_CODES = ["S1", "S2", "S3", "S4", "S5", "S6"];
@@ -2072,6 +2074,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [month, setMonth] = useState(() => format(addMonths(new Date(), 1), "yyyy-MM"));
   const [keepLeave, setKeepLeave] = useState(true);
   const [continuePrev, setContinuePrev] = useState(true);
+  const [generateLeads, setGenerateLeads] = useState(false);
   const [useCoverage, setUseCoverage] = useState(false);
   const [coverage, setCoverage] = useState<Array<Record<string, number>> | null>(null);
   const [offset, setOffset] = useState(0);
@@ -2126,6 +2129,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       } else {
         setGyPool(list.filter((a) => !a.is_lead && GY_DEFAULTS.some((t) => hits(a.name, t))).map((a) => a.id));
       }
+      if (typeof saved?.generateLeads === "boolean") setGenerateLeads(saved.generateLeads);
       if (saved?.coverage) setCoverage(saved.coverage);
       if (saved?.useCoverage) setUseCoverage(true);
       if (saved?.sheetUrl) setSheetUrl(saved.sheetUrl);
@@ -2148,11 +2152,11 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   useEffect(() => {
     if (loading) return;
     const t = setTimeout(async () => {
-      const err = await saveSetting(CFG_KEY, { gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage });
+      const err = await saveSetting(CFG_KEY, { gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage, generateLeads });
       setCfgError(err);
     }, 800);
     return () => clearTimeout(t);
-  }, [gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage, loading]);
+  }, [gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage, generateLeads, loading]);
 
   /**
    * Push the month to Google Sheets via the Apps Script web app.
@@ -2192,6 +2196,12 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   }
 
   const leads = agents.filter((a) => a.is_lead);
+  // The roster this run actually schedules. With leads switched off they are
+  // left out entirely, so Apply never deletes the days kept for them by hand.
+  const genAgents = useMemo(
+    () => (generateLeads ? agents : agents.filter((a) => !a.is_lead)),
+    [agents, generateLeads],
+  );
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 
   async function runPreview() {
@@ -2222,7 +2232,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         }
       }
       const res = generateSchedule({
-        agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+        agents: genAgents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
         startDate: from,
         endDate: to,
         gyPool,
@@ -2230,7 +2240,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         leave,
         offset,
         history,
-        coverage: useCoverage ? (coverage ?? defaultCoverage(agents.length)) : null,
+        coverage: useCoverage ? (coverage ?? defaultCoverage(genAgents.length)) : null,
       });
       setPreview(res);
       if (res.warnings.length) toast.warning(`${res.warnings.length} rule warning(s)`);
@@ -2258,7 +2268,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         ? auditSchedule(
             effective,
             preview.dates,
-            agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+            genAgents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
           )
         : null,
     [effective, preview, agents],
@@ -2276,12 +2286,12 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
 
   async function apply() {
     if (!preview) return;
-    if (!confirm(`Replace the schedule for ${agents.length} agents from ${format(start, "MMM d")} to ${format(end, "MMM d, yyyy")}?`)) return;
+    if (!confirm(`Replace the schedule for ${genAgents.length} agents from ${format(start, "MMM d")} to ${format(end, "MMM d, yyyy")}?`)) return;
     setBusy(true);
     try {
       const from = preview.dates[0];
       const to = preview.dates[preview.dates.length - 1];
-      const ids = agents.map((a) => a.id);
+      const ids = genAgents.map((a) => a.id);
       const { error: delErr } = await supabase
         .from("schedules").delete().gte("date", from).lte("date", to).in("agent_id", ids);
       if (delErr) { toast.error(delErr.message); return; }
@@ -2308,7 +2318,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     const head = [format(start, "MMMM"), ...preview.dates.map((d) => format(parseISO(d), "EEEE-dd"))];
     const lookup = new Map(preview.cells.map((c) => [`${c.agent_id}|${c.date}`, c.shift_code]));
     const lines = [head.join(",")];
-    for (const a of agents) {
+    for (const a of genAgents) {
       lines.push([`"${a.name}"`, ...preview.dates.map((d) => lookup.get(`${a.id}|${d}`) ?? "")].join(","));
     }
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
@@ -2336,7 +2346,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         <div className="min-w-0">
           <div className="text-lg font-bold leading-tight">Schedule Generator</div>
           <div className="text-[12px] text-white/85">
-            {loading ? "Loading roster…" : `${agents.length} active agents · ${leads.length} shift leads · ${gyPool.length} graveyard-eligible`}
+            {loading ? "Loading roster…" : `${genAgents.length} agents to schedule${generateLeads ? ` · ${leads.length} shift leads included` : ` · ${leads.length} shift leads left out`} · ${gyPool.length} graveyard-eligible`}
           </div>
         </div>
       </div>
@@ -2392,6 +2402,16 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       <GlassCard className="p-4 flex flex-col gap-3.5">
         <div className="label-caps text-slate-500">Options</div>
         <Toggle
+          on={generateLeads}
+          set={(v) => { setGenerateLeads(v); setPreview(null); }}
+          label="Generate shift leads"
+          hint={
+            generateLeads
+              ? "Leads are scheduled with everyone else, and 2-3 leads per band is enforced."
+              : `Off — the ${leads.length} shift leads are left out and their days are never changed, so you can keep their table by hand.`
+          }
+        />
+        <Toggle
           on={keepLeave} set={(v) => { setKeepLeave(v); setPreview(null); }}
           label="Keep existing leave"
           hint="Preserves AL, SL, DL, birthdays and holidays already entered for these dates."
@@ -2423,7 +2443,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           on={useCoverage}
           set={(v) => {
             setUseCoverage(v);
-            if (v && !coverage) setCoverage(defaultCoverage(agents.length));
+            if (v && !coverage) setCoverage(defaultCoverage(genAgents.length));
             setPreview(null);
           }}
           label="Set headcount per shift"
@@ -2450,7 +2470,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                     const m = MORNING_CODES.reduce((n, c) => n + (row[c] ?? 0), 0);
                     const e = EVENING_CODES.reduce((n, c) => n + (row[c] ?? 0), 0);
                     const total = m + e + (row.S6 ?? 0);
-                    const off = agents.length - total;
+                    const off = genAgents.length - total;
                     const heavy = wd === 5 || wd === 6;
                     return (
                       <tr key={lbl}>
@@ -2462,7 +2482,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                               onChange={(ev) => {
                                 const v = Math.max(0, Number(ev.target.value) || 0);
                                 setCoverage((prev) => {
-                                  const next = (prev ?? defaultCoverage(agents.length)).map((r) => ({ ...r }));
+                                  const next = (prev ?? defaultCoverage(genAgents.length)).map((r) => ({ ...r }));
                                   next[wd] = { ...next[wd], [c]: v };
                                   return next;
                                 });
@@ -2482,7 +2502,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
               </table>
             </div>
             {(() => {
-              const v = checkCoverage(coverage, agents.length);
+              const v = checkCoverage(coverage, genAgents.length);
               return (
                 <div
                   className={`rounded-xl px-3 py-2 text-[11px] border ${
@@ -2492,7 +2512,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                   }`}
                 >
                   {v.ok ? (
-                    <span className="font-semibold">These numbers can be staffed by your {agents.length} agents.</span>
+                    <span className="font-semibold">These numbers can be staffed by your {genAgents.length} genAgents.</span>
                   ) : (
                     <>
                       <span className="font-semibold">Not achievable. </span>
@@ -2516,7 +2536,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                   // Scored by actually generating with each candidate, so the
                   // suggestion is one that produced a clean month for this team.
                   const { coverage: best, issues } = recommendCoverage({
-                    agents: agents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+                    agents: genAgents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
                     startDate: format(start, "yyyy-MM-dd"),
                     endDate: format(end, "yyyy-MM-dd"),
                     gyPool,
@@ -2536,7 +2556,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                 Suggest workable numbers
               </button>
               <button
-                onClick={() => { setCoverage(defaultCoverage(agents.length)); setPreview(null); }}
+                onClick={() => { setCoverage(defaultCoverage(genAgents.length)); setPreview(null); }}
                 className="text-[11px] font-semibold text-violet-600"
               >
                 Reset to measured pattern
@@ -2674,7 +2694,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       {/* Actions */}
       <div className="flex flex-wrap items-center gap-2">
         <button
-          onClick={runPreview} disabled={busy || loading || agents.length === 0 || endBeforeStart}
+          onClick={runPreview} disabled={busy || loading || genAgents.length === 0 || endBeforeStart}
           className="rounded-xl px-4 py-2.5 text-sm font-bold text-white flex items-center gap-2 active:scale-95 disabled:opacity-50"
           style={{ background: "linear-gradient(120deg,#6d28d9,#a855f7)" }}
         >
@@ -2706,8 +2726,12 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             <StatChip label="Work blocks" value={onlyKey(s.workBlocks, 5) ? "all 5 days" : "mixed"} good={onlyKey(s.workBlocks, 5)} />
             <StatChip label="Off blocks" value={onlyKey(s.offBlocks, 2) ? "all 2 days" : "mixed"} good={onlyKey(s.offBlocks, 2)} />
             <StatChip label="Graveyard / day" value={rng(s.gyPerDay)} good={Math.min(...s.gyPerDay) >= 2} />
-            <StatChip label="Leads morning" value={rng(s.morningLeadsPerDay)} good={Math.min(...s.morningLeadsPerDay) >= 2} />
-            <StatChip label="Leads evening" value={rng(s.eveningLeadsPerDay)} good={Math.min(...s.eveningLeadsPerDay) >= 2} />
+            {generateLeads && (
+              <>
+                <StatChip label="Leads morning" value={rng(s.morningLeadsPerDay)} good={Math.min(...s.morningLeadsPerDay) >= 2} />
+                <StatChip label="Leads evening" value={rng(s.eveningLeadsPerDay)} good={Math.min(...s.eveningLeadsPerDay) >= 2} />
+              </>
+            )}
             <StatChip label="Shifts" value={String(effective.length)} good />
           </div>
 
@@ -2717,7 +2741,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
               <div key={d} className="flex items-center gap-2">
                 <span className="w-9 text-[11px] font-bold text-slate-600">{d}</span>
                 <div className="flex-1 h-4 rounded-md bg-slate-100 overflow-hidden">
-                  <div className="h-full bg-violet-400" style={{ width: `${Math.min(100, (s.offByWeekday[i] / Math.max(1, agents.length)) * 100 * 2.2)}%` }} />
+                  <div className="h-full bg-violet-400" style={{ width: `${Math.min(100, (s.offByWeekday[i] / Math.max(1, genAgents.length)) * 100 * 2.2)}%` }} />
                 </div>
                 <span className="text-[11px] font-semibold text-slate-500 w-16 text-right">
                   {s.offByWeekday[i].toFixed(1)} off
@@ -2771,7 +2795,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                 </tr>
               </thead>
               <tbody>
-                {agents.map((a) => (
+                {genAgents.map((a) => (
                   <tr key={a.id}>
                     <td
                       className="sticky left-0 z-10 backdrop-blur-md px-2 py-1 truncate"

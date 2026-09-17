@@ -103,7 +103,8 @@ const sumCodes = (row: Record<string, number> | undefined, codes: string[]) =>
  */
 export function feasibleOff(n: number, want: number[]): { off: number[]; x: number[] } {
   const x = new Array(7).fill(Math.floor(n / 7));
-  for (let i = 0; i < n - x.reduce((a, b) => a + b, 0); i++) x[i % 7]++;
+  const rest = n - x.reduce((a, b) => a + b, 0); // fixed up front: the loop grows the sum
+  for (let i = 0; i < rest; i++) x[i % 7]++;
   const offOf = (v: number[]) => v.map((_, d) => v[d] + v[(d + 6) % 7]);
   const cost = (v: number[]) =>
     offOf(v).reduce((c, o, d) => c + (o - want[d]) ** 2, 0);
@@ -788,6 +789,122 @@ export function generateSchedule(input: GenInput): GenResult {
     return [s0, e0] as const;
   };
 
+  // Plan every night stretch at once. Covering nights day by day is greedy: an
+  // early pick can leave a later night with only the person who just finished
+  // a stretch. Blocks are fixed by the days off, so the only choice is which
+  // pool blocks are nights — a small search. The floor outranks the rest rules,
+  // the rest rules outrank the preferred count, and the plan already chosen is
+  // kept where it is as good. Trim and fill below remain as the fallback.
+  {
+    type NB = { id: string; s: number; e: number; cur: boolean; forced: boolean | null; k: number };
+    const byAgent = new Map<string, NB[]>();
+    const all: NB[] = [];
+    const startUsed = new Map<string, number>();
+    const startPrevG = new Map<string, boolean>();
+    for (const x of sorted) {
+      if (!gyPool.has(x.id) || fixedShift[x.id]) continue;
+      const bands = bandByDay.get(x.id)!;
+      const carried = carriedBy.get(x.id);
+      const list: NB[] = [];
+      for (let d = 0; d < totalDays; ) {
+        if (bands[d] === null) { d++; continue; }
+        let e = d;
+        while (e + 1 < totalDays && bands[e + 1] !== null) e++;
+        let working = 0;
+        for (let y = d; y <= e; y++) if (!away(x.id, y)) working++;
+        let forced: boolean | null = null;
+        if (d === 0 && carried?.midBlock && carried.band) forced = carried.band === "G";
+        else if (working === 0) forced = bands[d] === "G"; // all leave: nothing to cover
+        const b: NB = { id: x.id, s: d, e, cur: bands[d] === "G", forced, k: list.length };
+        list.push(b);
+        all.push(b);
+        d = e + 1;
+      }
+      byAgent.set(x.id, list);
+      const cG = carried?.band === "G";
+      // A carried night run that is still going is that stretch, not a new one.
+      const contG = cG && !!carried?.midBlock && list[0]?.s === 0;
+      startUsed.set(x.id, cG ? 1 : 0);
+      startPrevG.set(x.id, cG && !contG);
+    }
+    all.sort((p, q) => p.s - q.s);
+
+    const need = dates.map((_, d) => gyNeed(wd(d)));
+    // Nights already held by people outside the plan (none today, but safe).
+    const base = dates.map((_, d) =>
+      sorted.filter((x) => !byAgent.has(x.id) && bandByDay.get(x.id)![d] === "G" && !away(x.id, d)).length,
+    );
+    const FLOOR = 1000, REST = 100, OFF_NEED = 1, CHANGE = 0.2;
+    const count = base.slice();
+    const pick = new Map<NB, boolean>();
+    const used = new Map(startUsed);
+    const lastG = new Map(startPrevG); // was this agent's previous block nights?
+    let best: Map<NB, boolean> | null = null;
+    let bestCost = Infinity;
+    let nodes = 0;
+    const NODE_BUDGET = 60000;
+    const dayCost = (d: number) => {
+      const c = count[d];
+      return (c < GY_MIN ? (GY_MIN - c) * FLOOR : 0) + Math.abs(c - need[d]) * OFF_NEED;
+    };
+    const dfs = (i: number, done: number, cost: number) => {
+      if (++nodes > NODE_BUDGET) return;
+      // Days before the next block's start are final.
+      const upto = i < all.length ? all[i].s : totalDays;
+      let c = cost;
+      for (let d = done; d < upto; d++) c += dayCost(d);
+      if (c >= bestCost) return;
+      if (i === all.length) { bestCost = c; best = new Map(pick); return; }
+      const b = all[i];
+      const opts: boolean[] = b.forced !== null ? [b.forced] : b.cur ? [true, false] : [false, true];
+      for (const g of opts) {
+        let add = b.forced === null && g !== b.cur ? CHANGE : 0;
+        const prevG = b.k === 0 ? lastG.get(b.id)! : pick.get(byAgent.get(b.id)![b.k - 1])!;
+        const u = used.get(b.id)!;
+        const isNew = g && !(b.forced && b.s === 0 && carriedBy.get(b.id)?.midBlock);
+        if (g) {
+          let over = false;
+          for (let y = b.s; y <= b.e; y++) if (count[y] + (away(b.id, y) ? 0 : 1) > GY_MAX) over = true;
+          if (over && b.forced === null) continue;
+          if (b.forced === null) {
+            if (prevG) add += REST;
+            if (u >= MAX_GY_BLOCKS) add += REST;
+          }
+          for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) count[y]++;
+        }
+        pick.set(b, g);
+        if (isNew) used.set(b.id, u + 1);
+        dfs(i + 1, upto, c + add);
+        if (isNew) used.set(b.id, u);
+        pick.delete(b);
+        if (g) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) count[y]--;
+      }
+    };
+    dfs(0, 0, 0);
+
+    const plan = best as Map<NB, boolean> | null;
+    if (plan) {
+      for (const [id, list] of byAgent) {
+        const bands = bandByDay.get(id)!;
+        const prefs = prefByDay.get(id)!;
+        const name = sorted.find((x) => x.id === id)!.name;
+        let u = startUsed.get(id)!;
+        let prevG = startPrevG.get(id)!;
+        for (const b of list) {
+          const g = plan.get(b)!;
+          if (g && b.forced === null && (prevG || u >= MAX_GY_BLOCKS)) {
+            warnings.push(`${name} took an extra night stretch to keep ${GY_MIN} on nights for ${dates[b.s]}.`);
+          }
+          if (g && !(b.forced && b.s === 0 && carriedBy.get(id)?.midBlock)) u++;
+          if (g !== b.cur) {
+            for (let y = b.s; y <= b.e; y++) { bands[y] = g ? "G" : "M"; prefs[y] = null; }
+          }
+          prevG = g;
+        }
+      }
+    }
+  }
+
   // Trim: a night over the ceiling loses a block, but only one whose other
   // nights can spare it.
   for (let d = 0; d < totalDays; d++) {
@@ -795,6 +912,8 @@ export function generateSchedule(input: GenInput): GenResult {
       const spare = sorted.find((x) => {
         if (bandByDay.get(x.id)![d] !== "G") return false;
         const [s0, e0] = blockAround(x.id, d);
+        // A night run carried in from last period has to finish as nights.
+        if (s0 === 0 && carriedBy.get(x.id)?.midBlock) return false;
         for (let y = s0; y <= e0; y++) if (gyOn(y) - 1 < GY_MIN) return false;
         return true;
       });
@@ -813,33 +932,39 @@ export function generateSchedule(input: GenInput): GenResult {
     for (let guard = 0; gyOn(d) < need && guard < 8; guard++) {
       const nights = (id: string) =>
         bandByDay.get(id)!.reduce((n, b) => n + (b === "G" ? 1 : 0), 0);
+      // How many rest rules taking this agent's block would break: the night
+      // cap, and a night stretch directly before or after. Strict picks break
+      // none; below the floor the least-bad one is taken.
+      const cost = (x: GenAgent): number | null => {
+        const bands = bandByDay.get(x.id)!;
+        const b = bands[d];
+        if (!(gyPool.has(x.id) && b !== null && b !== "G" && !fixedShift[x.id])) return null;
+        if (away(x.id, d)) return null; // on leave that night
+        const [s0, e0] = blockAround(x.id, d);
+        if (s0 === 0 && carriedBy.get(x.id)?.midBlock) return null; // run already under way
+        // Up to the hard ceiling here, not the preferred number: a block
+        // spans five nights and would otherwise be blocked by any one of
+        // them already sitting at two, leaving the floor unreachable.
+        for (let y = s0; y <= e0; y++) if (gyOn(y) + 1 > GY_MAX) return null;
+        let broken = 0;
+        let own = 0;
+        for (let y = 0; y < totalDays; y++) {
+          if (bands[y] === "G" && (y === 0 || bands[y - 1] !== "G")) own++;
+        }
+        if (own >= MAX_GY_BLOCKS) broken++;
+        let before = s0 - 1;
+        while (before >= 0 && bands[before] === null) before--;
+        let after = e0 + 1;
+        while (after < totalDays && bands[after] === null) after++;
+        if (before >= 0 && bands[before] === "G") broken++;
+        if (after < totalDays && bands[after] === "G") broken++;
+        return broken;
+      };
       const pick = (mode: "strict" | "any") =>
         sorted
-          .filter((x) => {
-            const bands = bandByDay.get(x.id)!;
-            const b = bands[d];
-            if (!(gyPool.has(x.id) && b !== null && b !== "G" && !fixedShift[x.id])) return false;
-            if (away(x.id, d)) return false; // on leave that night
-            const [s0, e0] = blockAround(x.id, d);
-            // Up to the hard ceiling here, not the preferred number: a block
-            // spans five nights and would otherwise be blocked by any one of
-            // them already sitting at two, leaving the floor unreachable.
-            for (let y = s0; y <= e0; y++) if (gyOn(y) + 1 > GY_MAX) return false;
-            if (mode === "any") return true;
-            let own = 0;
-            for (let y = 0; y < totalDays; y++) {
-              if (bands[y] === "G" && (y === 0 || bands[y - 1] !== "G")) own++;
-            }
-            if (own >= MAX_GY_BLOCKS) return false;
-            let before = s0 - 1;
-            while (before >= 0 && bands[before] === null) before--;
-            let after = e0 + 1;
-            while (after < totalDays && bands[after] === null) after++;
-            if (before >= 0 && bands[before] === "G") return false;
-            if (after < totalDays && bands[after] === "G") return false;
-            return true;
-          })
-          .sort((x, y) => nights(x.id) - nights(y.id))[0];
+          .map((x) => ({ x, c: cost(x) }))
+          .filter((o): o is { x: GenAgent; c: number } => o.c !== null && (mode === "any" || o.c === 0))
+          .sort((p, q) => p.c - q.c || nights(p.x.id) - nights(q.x.id))[0]?.x;
 
       let cand = pick("strict");
       const short = gyOn(d);
@@ -1172,8 +1297,12 @@ function verify(cells: GenCell[], dates: string[], agents: GenAgent[], gyPool: S
     if (days) out.push(`${label}: below ${min} on ${days} of ${arr.length} days (min ${Math.min(...arr)}).`);
   };
   bad(s.gyPerDay, 2, "Graveyard cover");
-  bad(s.morningLeadsPerDay, 2, "Morning leads");
-  bad(s.eveningLeadsPerDay, 2, "Evening leads");
+  // Leads can be left out of generation entirely (their table is kept by
+  // hand); with none in the run there is no lead cover to check.
+  if (agents.some((a) => a.is_lead)) {
+    bad(s.morningLeadsPerDay, 2, "Morning leads");
+    bad(s.eveningLeadsPerDay, 2, "Evening leads");
+  }
   const offLens = Object.keys(s.offBlocks).map(Number).filter((k) => k !== 2);
   if (offLens.length) out.push(`Off-blocks not equal to 2 days: ${offLens.join(", ")}.`);
   const workLens = Object.keys(s.workBlocks).map(Number).filter((k) => k !== 5);
