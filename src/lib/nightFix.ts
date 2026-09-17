@@ -38,7 +38,9 @@ export type NightFixInput = {
 const MIN_G = 2;
 const MAX_G = 3;
 const MAX_EDITS = 4;
-const MAX_PARTIAL = 2; // partial edits allowed in one cluster's answer
+// Partial edits would start or stop nights partway through a week, which the
+// team does not allow — only whole blocks are ever changed.
+const MAX_PARTIAL = 0;
 // Search cost: a whole-block edit costs 1, a partial one 2, so one partial edit
 // beats a chain of three or four whole-block swaps but never a single clean one.
 const PARTIAL_COST = 2;

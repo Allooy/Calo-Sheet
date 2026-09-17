@@ -55,7 +55,7 @@ import { parseScheduleGrid, resolveAgentNames, type GridEntry } from "@/lib/impo
 import { parseLeaveGrid, resolveLeaveNames, aliasKey, groupLeaveRuns, type LeaveGrid, type NameAliases } from "@/lib/importLeave";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
-import { generateSchedule, auditSchedule, defaultCoverage, recommendCoverage, checkCoverage, feasibleOff, offCountsOf, bandOfCode, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
+import { generateSchedule, auditSchedule, rotationIssues, defaultCoverage, recommendCoverage, checkCoverage, feasibleOff, offCountsOf, bandOfCode, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
 import { suggestNightFixes, type NightFixResult } from "@/lib/nightFix";
 import { loadSetting, saveSetting, readCached } from "@/lib/settings";
 
@@ -2715,6 +2715,22 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftPayload, draft?.status === "saving"]);
 
+  // Rotation is re-read from the cells as they stand, so hand edits update it.
+  const shownIssues = useMemo(() => {
+    if (!preview) return [];
+    const steady = genAgents
+      .filter((a) => fixed[a.id] || fixedBand[a.id] || fixedOff[a.id]?.length)
+      .map((a) => a.id);
+    return [
+      ...(preview.issues ?? []).filter((i) => i.rule !== "Shift rotation"),
+      ...rotationIssues(
+        effective, preview.dates,
+        genAgents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+        steady,
+      ),
+    ];
+  }, [preview, effective, genAgents, fixed, fixedBand, fixedOff]);
+
   function setCell(agentId: string, date: string, code: string) {
     setEdits((m) => {
       const n = new Map(m);
@@ -3452,13 +3468,13 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             </table>
           </div>
 
-          {(preview.issues?.length ?? 0) > 0 && (
+          {shownIssues.length > 0 && (
             <>
               <div className="label-caps text-slate-500 mt-1">
-                Rule violations ({preview.issues.length})
+                Rule violations ({shownIssues.length})
               </div>
               <div className="flex flex-col gap-2">
-                {preview.issues.map((iss, i) => (
+                {shownIssues.map((iss, i) => (
                   <div
                     key={i}
                     className={`rounded-xl px-3 py-2 border ${
@@ -3642,10 +3658,16 @@ function LeaveUploadCard({
     // leave the sheet no longer shows (removed). Shifts on other days stay.
     const clear = new Map<string, string[]>();
     let removed = 0, overwritten = 0;
+    // Leave the sheet no longer shows is deleted with nothing in its place, so
+    // those days stay empty until the period is generated again.
+    const emptied = new Map<string, number>();
     for (const r of existing) {
       const want = plan.get(r.agent_id)!.get(r.date);
       if (want ? r.shift_code !== want : isLeave(r.shift_code)) {
-        if (!want) removed++; else if (!isLeave(r.shift_code)) overwritten++;
+        if (!want) {
+          removed++;
+          emptied.set(r.agent_id, (emptied.get(r.agent_id) ?? 0) + 1);
+        } else if (!isLeave(r.shift_code)) overwritten++;
         if (!clear.has(r.agent_id)) clear.set(r.agent_id, []);
         clear.get(r.agent_id)!.push(r.date);
       }
@@ -3665,6 +3687,10 @@ function LeaveUploadCard({
       `• ${inserts.length} leave day(s) added or changed\n` +
       `• ${removed} leave day(s) removed (no longer on the sheet)\n` +
       (overwritten ? `• ${overwritten} scheduled shift(s) replaced by leave\n` : "") +
+      (emptied.size
+        ? `\n⚠ These days will be EMPTY afterwards (leave removed, no shift yet) — generate that period again to fill them:\n` +
+          [...emptied].map(([id, n]) => `   ${nameOf(id)}: ${n} day(s)`).join("\n") + "\n"
+        : "") +
       `\nThe sheet wins. Nobody outside the sheet is touched.`;
     if (!window.confirm(msg)) return;
 
@@ -3694,6 +3720,9 @@ function LeaveUploadCard({
         details: { file: fileName, from: grid.from, to: grid.to, people: ids.length, added: inserts.length, removed },
       });
       toast.success(`Leave updated from ${fileName}`);
+      if (emptied.size) {
+        toast.warning(`${removed} day(s) are now empty for ${emptied.size} people — generate the period again to fill them.`);
+      }
       setGrid(null);
       setPicks({});
       await onDone();

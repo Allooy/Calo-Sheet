@@ -38,7 +38,9 @@ const EVENING_MIX = ["S4", "S5"];
 
 const GY_PER_WEEK = 3; // 3 assigned → 2-3 actually on duty each day
 const GY_WINDOW_WEEKS = 1; // one week of nights, then the trio rotates out
-const MAX_GY_BLOCKS = 2; // ceiling on night stretches per agent per period
+const MAX_GY_BLOCKS = 2;
+const MAX_SAME_BAND = 2; // day-band weeks in a row before a switch is forced
+const STAY_COST = 4;     // extra shortfall needed to keep someone on a band again // ceiling on night stretches per agent per period
 // How far below target the other band must be before an agent stays put rather
 // than alternating. Higher favours the headcount targets, lower favours rotation.
 const ROTATE_BIAS = 2;
@@ -785,6 +787,11 @@ export function generateSchedule(input: GenInput): GenResult {
     // Last day band worked, so a block can prefer to alternate away from it.
     let prevDayBand: Band | null = carried?.band === "G" ? null : (carried?.band ?? null);
     let gyUsed = prevWasG ? 1 : 0;         // night stretches already spent
+    // Weeks in a row on the same day band, and how often this person has
+    // already been kept on one — so the extra evening weeks an evening-heavy
+    // grid needs go round the team instead of landing on the same people.
+    let sameRun = prevDayBand ? 1 : 0;
+    let stays = 0;
     blocks.forEach((blk, bi) => {
       let band: Band;
       let pref: string | null = null;
@@ -838,7 +845,7 @@ export function generateSchedule(input: GenInput): GenResult {
         const stayTo = rotateTo === "M" ? "E" : "M";
         const gapRotate = rotateTo === "M" ? gapM : gapE;
         const gapStay = stayTo === "M" ? gapM : gapE;
-        band = gapStay > gapRotate + ROTATE_BIAS ? stayTo : rotateTo;
+        band = gapStay > gapRotate + ROTATE_BIAS + stays * STAY_COST ? stayTo : rotateTo;
       } else {
         const plan = bandPlan.get(a.id) ?? 0;
         band = plan === "M" || plan === "E"
@@ -849,6 +856,11 @@ export function generateSchedule(input: GenInput): GenResult {
       // band never changes, keeps the same code every day for a month.
       // Coming off nights you step down to mornings, never straight back to
       // evenings — which is what allowed S6, evening, S6 in consecutive weeks.
+      // Never three weeks running on the same day band.
+      const free = !locked && !offDaysOf(a.id) && !(bi === 0 && blk.start === 0 && carried?.midBlock);
+      if (free && band !== "G" && band === prevDayBand && sameRun >= MAX_SAME_BAND) {
+        band = band === "M" ? "E" : "M";
+      }
       if (prevWasG && band === "E" && !locked) band = "M";
       if (!pref && band === "M") pref = MORNING_MIX[(ai + nM++) % MORNING_MIX.length];
       else if (!pref && band === "E") pref = EVENING_MIX[(ai + nE++) % EVENING_MIX.length];
@@ -859,6 +871,9 @@ export function generateSchedule(input: GenInput): GenResult {
         else if (band === "E") { onE[d]++; if (a.is_lead) leadE[d]++; }
         else if (band === "G") onG[d]++;
       }
+      if (band === "G") sameRun = 0;
+      else if (band === prevDayBand) { sameRun++; if (bi > 0 || !carried?.midBlock) stays++; }
+      else sameRun = 1;
       prevWasG = band === "G";
       if (band !== "G") prevDayBand = band;
     });
@@ -887,9 +902,7 @@ export function generateSchedule(input: GenInput): GenResult {
   // the rest rules outrank the preferred count, and the plan already chosen is
   // kept where it is as good. Trim and fill below remain as the fallback.
   {
-    // carriedDay: a day-band week already under way from last period. It stays
-    // as it is unless the floor cannot be held any other way.
-    type NB = { id: string; s: number; e: number; cur: boolean; forced: boolean | null; k: number; carriedDay: boolean };
+    type NB = { id: string; s: number; e: number; cur: boolean; forced: boolean | null; k: number };
     const byAgent = new Map<string, NB[]>();
     const all: NB[] = [];
     const startUsed = new Map<string, number>();
@@ -907,13 +920,11 @@ export function generateSchedule(input: GenInput): GenResult {
         for (let y = d; y <= e; y++) if (!away(x.id, y)) working++;
         let forced: boolean | null = null;
         const carriedRun = d === 0 && !!carried?.midBlock && !!carried.band;
-        if (carriedRun && carried!.band === "G") forced = true;
-        else if (carriedRun && working === 0) forced = false;
+        // A week already under way keeps its band: nights never start or stop
+        // partway through a week.
+        if (carriedRun) forced = carried!.band === "G";
         else if (working === 0) forced = bands[d] === "G"; // all leave: nothing to cover
-        const b: NB = {
-          id: x.id, s: d, e, cur: bands[d] === "G", forced, k: list.length,
-          carriedDay: carriedRun && carried!.band !== "G",
-        };
+        const b: NB = { id: x.id, s: d, e, cur: bands[d] === "G", forced, k: list.length };
         list.push(b);
         all.push(b);
         d = e + 1;
@@ -938,7 +949,7 @@ export function generateSchedule(input: GenInput): GenResult {
     // so nights go round the whole pool before anyone gets a second one.
     // The ceiling gives way only to the floor: a fourth person on one night is
     // taken when it is the only way to keep two on another.
-    const FLOOR = 1000, CEIL = 500, SWITCH = 300, REST = 100, OFF_NEED = 1, CHANGE = 0.2;
+    const FLOOR = 1000, CEIL = 500, REST = 100, OFF_NEED = 1, CHANGE = 0.2;
     let fair = 2;
     const count = base.slice();
     const pick = new Map<NB, boolean>();
@@ -987,7 +998,7 @@ export function generateSchedule(input: GenInput): GenResult {
         : b.cur || needed ? [true, false] : [false, true];
       if (canG(b)) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) potential[y]--;
       for (const g of opts) {
-        let add = b.forced === null && g !== b.cur ? (b.carriedDay ? SWITCH : CHANGE) : 0;
+        let add = b.forced === null && g !== b.cur ? CHANGE : 0;
         const prevG = b.k === 0 ? lastG.get(b.id)! : pick.get(byAgent.get(b.id)![b.k - 1])!;
         const u = used.get(b.id)!;
         const isNew = g && !(b.forced && b.s === 0 && carriedBy.get(b.id)?.midBlock);
@@ -1051,17 +1062,19 @@ export function generateSchedule(input: GenInput): GenResult {
         let prevG = startPrevG.get(id)!;
         for (const b of list) {
           const g = plan.get(b)!;
-          if (g && b.carriedDay) {
-            warnings.push(
-              `${name} switched to nights on ${dates[b.s]}, partway through a week that started last period, to keep ${GY_MIN} on nights.`,
-            );
-          }
           if (g && b.forced === null && (prevG || u >= MAX_GY_BLOCKS)) {
             warnings.push(`${name} took an extra night stretch to keep ${GY_MIN} on nights for ${dates[b.s]}.`);
           }
           if (g && !(b.forced && b.s === 0 && carriedBy.get(id)?.midBlock)) u++;
           if (g !== b.cur) {
-            for (let y = b.s; y <= b.e; y++) { bands[y] = g ? "G" : "M"; prefs[y] = null; }
+            // A dropped night week alternates with the week before it; after
+            // nights (or at the very start) it steps down to mornings.
+            let day: Band = "M";
+            if (!g && b.k > 0) {
+              const before = bands[list[b.k - 1].s];
+              if (before === "M" && !plan.get(list[b.k - 1])) day = "E";
+            }
+            for (let y = b.s; y <= b.e; y++) { bands[y] = g ? "G" : day; prefs[y] = null; }
           }
           prevG = g;
         }
@@ -1323,6 +1336,10 @@ export function generateSchedule(input: GenInput): GenResult {
       fix: "Use 'Suggest workable numbers' to fill the grid with the closest set that can be staffed.",
     });
   }
+  issues.push(...rotationIssues(
+    cells, dates, sorted,
+    sorted.filter((a) => lockBand(a.id) || offDaysOf(a.id) || fixedShift[a.id]).map((a) => a.id),
+  ));
   const covered = new Set([...nightsShort, ...nightsExtra, ...leadPinned, ...leadSpaced, ...infeasible]);
   for (const w of all) {
     if (covered.has(w)) continue;
@@ -1386,6 +1403,95 @@ function kind3(k: string[]): string[][] {
     } else cur.push(c);
   }
   if (cur.length) out.push(cur);
+  return out;
+}
+
+/**
+ * How each person moves between bands, read from the cells themselves so it
+ * also covers hand edits: the same day band three weeks running, a period with
+ * no morning week, and a week that mixes bands (including nights starting or
+ * stopping partway through). People with a fixed shift or band, or their own
+ * days off, are skipped. Leave of three days or more resets the run.
+ */
+export function rotationIssues(
+  cells: GenCell[], dates: string[], agents: GenAgent[], steadyIds: string[] = [],
+): Issue[] {
+  const skip = new Set(steadyIds);
+  const long: Array<{ name: string; date: string; band: string; weeks: number }> = [];
+  const noMorning: string[] = [];
+  const mixed: Array<{ name: string; date: string; nights: boolean }> = [];
+  const label = (b: Band) => (b === "M" ? "mornings" : b === "E" ? "evenings" : "nights");
+  for (const a of agents) {
+    if (skip.has(a.id)) continue;
+    const seq = seqFor(cells, a.id, dates);
+    type Blk = { start: number; bands: Set<Band>; band: Band; gapBefore: number };
+    const blks: Blk[] = [];
+    let gap = 0;
+    for (let d = 0; d < seq.length; ) {
+      const b = bandOfCode(seq[d]);
+      if (!b) {
+        if (seq[d] && seq[d].toUpperCase() !== "OFF") gap += 1; else if (!seq[d]) gap += 1;
+        d++;
+        continue;
+      }
+      const bands = new Set<Band>();
+      const start = d;
+      while (d < seq.length && bandOfCode(seq[d])) { bands.add(bandOfCode(seq[d])!); d++; }
+      blks.push({ start, bands, band: bandOfCode(seq[start])!, gapBefore: gap });
+      gap = 0;
+    }
+    for (const b of blks) {
+      if (b.bands.size > 1) mixed.push({ name: a.name, date: dates[b.start], nights: b.bands.has("G") });
+    }
+    let run = 0;
+    for (let k = 0; k < blks.length; k++) {
+      const b = blks[k];
+      const cont = k > 0 && b.band === blks[k - 1].band && b.band !== "G" && b.gapBefore < 3;
+      run = cont ? run + 1 : 1;
+      if (run === 3) long.push({ name: a.name, date: dates[blks[k - 2].start], band: label(b.band), weeks: 3 });
+    }
+    const dayBlocks = blks.filter((b) => b.band !== "G");
+    if (dates.length >= 21 && dayBlocks.length >= 3 && !dayBlocks.some((b) => b.bands.has("M"))) {
+      noMorning.push(a.name);
+    }
+  }
+  const out: Issue[] = [];
+  if (long.length) {
+    out.push({
+      rule: "Shift rotation",
+      level: "short",
+      detail: `${long.length} time(s) someone is on the same band three weeks running: ` +
+        long.map((l) => `${l.name} (${l.band} from ${l.date})`).join(", ") + ".",
+      why: "An evening-heavy grid needs some people to stay on evenings for a second week; when the same people absorb it again, they never get a morning week.",
+      fix: "Swap one of those weeks with someone who has alternated normally, lower the evening numbers slightly, or set the person to 'evenings only' in Roster rules if that is intended.",
+      dates: long.map((l) => l.date),
+      agents: long.map((l) => l.name),
+    });
+  }
+  if (noMorning.length) {
+    out.push({
+      rule: "Shift rotation",
+      level: "short",
+      detail: `No morning week this period: ${noMorning.join(", ")}.`,
+      why: "Everyone rotating is meant to get mornings too; only people set to 'evenings only' should stay on evenings.",
+      fix: "Change one of their evening weeks to mornings (swap with someone on mornings twice), or mark them 'evenings only' if intended.",
+      agents: noMorning,
+    });
+  }
+  if (mixed.length) {
+    const nights = mixed.filter((m) => m.nights);
+    out.push({
+      rule: "Shift rotation",
+      level: "broken",
+      detail: `${mixed.length} week(s) mix bands` +
+        (nights.length ? `, ${nights.length} with nights starting or stopping partway through` : "") + ": " +
+        mixed.map((m) => `${m.name} (${m.date})`).join(", ") + ".",
+      why: "A work week stays on one band: mornings, evenings, or nights for the whole five days.",
+      fix: "Make the whole week the same band. If it touches the start or end of the period, the days outside it come from an older schedule — generate the neighbouring period too.",
+      dates: mixed.map((m) => m.date),
+      agents: mixed.map((m) => m.name),
+    });
+  }
   return out;
 }
 
