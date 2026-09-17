@@ -88,6 +88,8 @@ export type GenInput = {
    * block and cannot be retuned day by day.
    */
   coverage?: Array<Record<string, number>> | null;
+  /** How hard the night planner searches (steps). Lower is faster, for previews run in bulk. */
+  searchBudget?: number;
 };
 
 export const MORNING_CODES = ["S1", "S2", "S3"];
@@ -175,7 +177,7 @@ export function recommendCoverage(
   for (const depth of [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]) {
     for (const share of [0.40, 0.43, 0.46, 0.48, 0.50, 0.53, 0.56]) {
       const coverage = candidateGrid(n, depth, share, fixedOffOn);
-      const run = generateSchedule({ ...base, coverage });
+      const run = generateSchedule({ ...base, coverage, searchBudget: 30000 });
       const score =
         run.issues.reduce((c, i) => c + (i.level === "broken" ? 10 : 1), 0) +
         // a night below two, or a band below two leads, is the worst outcome
@@ -655,7 +657,14 @@ export function generateSchedule(input: GenInput): GenResult {
     ];
     let trio = new Set<string>();
     for (const [cands, note] of tiers) {
-      trio = pickGyTrio(cands, pair, seed);
+      // Whoever has had the fewest stretches goes first; the seed still
+      // rotates the order among equals, so nights go round the whole pool.
+      const n = cands.length;
+      const order = cands
+        .map((a, i) => ({ a, k: n ? (i - (seed % n) + n) % n : 0 }))
+        .sort((x, y) => (gyBlocks.get(x.a.id) ?? 0) - (gyBlocks.get(y.a.id) ?? 0) || x.k - y.k)
+        .map((x) => x.a);
+      trio = pickGyTrio(order, pair, 0);
       if (trio.size >= want) { if (note) warnings.push(note); break; }
     }
     for (const id of trio) gyBlocks.set(id, (gyBlocks.get(id) ?? 0) + 1);
@@ -913,14 +922,21 @@ export function generateSchedule(input: GenInput): GenResult {
       startUsed.set(x.id, cG ? 1 : 0);
       startPrevG.set(x.id, cG && !contG);
     }
-    all.sort((p, q) => p.s - q.s);
+    // Fixed blocks first on a shared start day: they hold their nights no
+    // matter what, so the ceiling check on the others must already see them.
+    all.sort((p, q) => p.s - q.s || (p.forced === true ? 0 : 1) - (q.forced === true ? 0 : 1));
 
     const need = dates.map((_, d) => gyNeed(wd(d)));
     // Nights already held by people outside the plan (none today, but safe).
     const base = dates.map((_, d) =>
       sorted.filter((x) => !byAgent.has(x.id) && bandByDay.get(x.id)![d] === "G" && !away(x.id, d)).length,
     );
-    const FLOOR = 1000, SWITCH = 300, REST = 100, OFF_NEED = 1, CHANGE = 0.2;
+    // FAIR: each further stretch for the same person costs more (1st 2, 2nd 6),
+    // so nights go round the whole pool before anyone gets a second one.
+    // The ceiling gives way only to the floor: a fourth person on one night is
+    // taken when it is the only way to keep two on another.
+    const FLOOR = 1000, CEIL = 500, SWITCH = 300, REST = 100, OFF_NEED = 1, CHANGE = 0.2;
+    let fair = 2;
     const count = base.slice();
     const pick = new Map<NB, boolean>();
     const used = new Map(startUsed);
@@ -928,7 +944,7 @@ export function generateSchedule(input: GenInput): GenResult {
     let best: Map<NB, boolean> | null = null;
     let bestCost = Infinity;
     let nodes = 0;
-    const NODE_BUDGET = 60000;
+    const NODE_BUDGET = input.searchBudget ?? 250000;
     // How many undecided blocks could still add a night on each day. With it
     // the search sees an unreachable floor straight away instead of after
     // exploring everything below it.
@@ -973,13 +989,16 @@ export function generateSchedule(input: GenInput): GenResult {
         const u = used.get(b.id)!;
         const isNew = g && !(b.forced && b.s === 0 && carriedBy.get(b.id)?.midBlock);
         if (g) {
-          let over = false;
-          for (let y = b.s; y <= b.e; y++) if (count[y] + (away(b.id, y) ? 0 : 1) > GY_MAX) over = true;
-          if (over && b.forced === null) continue;
+          if (b.forced === null) {
+            for (let y = b.s; y <= b.e; y++) {
+              if (!away(b.id, y) && count[y] + 1 > GY_MAX) add += CEIL;
+            }
+          }
           if (b.forced === null) {
             if (prevG) add += REST;
             if (u >= MAX_GY_BLOCKS) add += REST;
           }
+          if (isNew) add += fair * (2 * u + 1);
           for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) count[y]++;
         }
         pick.set(b, g);
@@ -993,8 +1012,34 @@ export function generateSchedule(input: GenInput): GenResult {
     };
     dfs(0, 0, 0);
 
+    // Fair shares make the search bigger. If that search ran out before it
+    // held the floor, search again without them — two a night comes first.
+    const shortOf = (plan: Map<NB, boolean> | null) => {
+      if (!plan) return Infinity;
+      const c = base.slice();
+      for (const [b, g] of plan) if (g) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) c[y]++;
+      return c.reduce((n, v) => n + Math.max(0, GY_MIN - v), 0);
+    };
+    const fairPlan = best as Map<NB, boolean> | null;
+    const fairShort = shortOf(fairPlan);
+    if (fairShort > 0) {
+      fair = 0;
+      best = null;
+      bestCost = Infinity;
+      nodes = 0;
+      dfs(0, 0, 0);
+      if (shortOf(best) >= fairShort) best = fairPlan;
+    }
+
     const plan = best as Map<NB, boolean> | null;
     if (plan) {
+      const c = base.slice();
+      for (const [b, g] of plan) if (g) for (let y = b.s; y <= b.e; y++) if (!away(b.id, y)) c[y]++;
+      c.forEach((v, d) => {
+        if (v > GY_MAX) {
+          warnings.push(`${v} on nights for ${dates[d]} — the only way to keep ${GY_MIN} on the nights around it.`);
+        }
+      });
       for (const [id, list] of byAgent) {
         const bands = bandByDay.get(id)!;
         const prefs = prefByDay.get(id)!;
