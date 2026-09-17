@@ -28,7 +28,8 @@ var SHEET_ID = '1obGJ8KlsziGhIVvaheQd3aiW0iG7peOjGSG3uFR_5TQ';
  * "Who has access: Anyone". Google requires "Anyone" for a non-Google caller;
  * the SYNC_TOKEN script property is what actually gates it, so set one.
  *
- * Body: {"token":"…","month":"2026-09","weeks":4}
+ * Body: {"token":"…","from":"2026-10-15","to":"2026-10-31"}
+ *   (older callers may send {"month":"2026-09","weeks":4} instead)
  */
 function doPost(e) {
   var out = function (obj) {
@@ -40,7 +41,12 @@ function doPost(e) {
     var expected = PropertiesService.getScriptProperties().getProperty('SYNC_TOKEN');
     if (!expected) return out({ ok: false, error: 'SYNC_TOKEN is not set on the script.' });
     if (body.token !== expected) return out({ ok: false, error: 'Bad token.' });
-    if (!/^\d{4}-\d{2}$/.test(body.month || '')) return out({ ok: false, error: 'month must be YYYY-MM.' });
+    var ymd = /^\d{4}-\d{2}-\d{2}$/;
+    if (ymd.test(body.from || '') && ymd.test(body.to || '')) {
+      var nr = syncRange(body.from, body.to);
+      return out({ ok: true, month: body.from + ' to ' + body.to, agents: nr });
+    }
+    if (!/^\d{4}-\d{2}$/.test(body.month || '')) return out({ ok: false, error: 'Send from/to (YYYY-MM-DD) or month (YYYY-MM).' });
     var n = syncMonth(body.month, Number(body.weeks) || 4);
     return out({ ok: true, month: body.month, agents: n });
   } catch (err) {
@@ -281,35 +287,73 @@ function inkFor_(code) {
  * tab. Interleave those and the grid can be left in a state the editor cannot
  * load. A script lock makes a second caller wait rather than race.
  */
+/** Month-based entry kept for the editor menu and the timed trigger. */
 function syncMonth(month, weeks) {
+  weeks = weeks || 4;
+  var parts = month.split('-');
+  var start = anchorSunday_(Number(parts[0]), Number(parts[1]));
+  var end = new Date(start.getTime());
+  end.setDate(end.getDate() + weeks * 7 - 1);
+  return syncRange(fmt_(start), fmt_(end));
+}
+
+/**
+ * Serialised entry point.
+ *
+ * Two overlapping runs both unfreeze, break merges, clear and re-merge the same
+ * tab. Interleave those and the grid can be left in a state the editor cannot
+ * load. A script lock makes a second caller wait rather than race.
+ */
+function syncRange(from, to) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(45000)) {
     throw new Error('Another sync is already running; try again in a moment.');
   }
   try {
-    return syncMonth_(month, weeks);
+    return syncRange_(from, to);
   } finally {
     lock.releaseLock();
   }
 }
 
-function syncMonth_(month, weeks) {
-  weeks = weeks || 4;
-  var tz = Session.getScriptTimeZone();
-  var parts = month.split('-');
-  var start = anchorSunday_(Number(parts[0]), Number(parts[1]));
-  // Label from the requested month, never from the anchor Sunday: the anchor
-  // often falls in the previous month (Sep 2026 anchors to Aug 30), which would
-  // name the tab after — and overwrite — the wrong month.
-  var monthFirst = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
-  var dates = [];
-  for (var i = 0; i < weeks * 7; i++) {
-    var d = new Date(start.getTime());
-    d.setDate(d.getDate() + i);
-    dates.push(d);
+/** "2026-10-15" -> local Date, avoiding the UTC shift of new Date(string). */
+function parseYmd_(s) {
+  var p = String(s).split('-');
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+}
+
+/**
+ * The month a range belongs to: the one holding most of its days. A period
+ * that starts on the Sunday before the 1st (Sep 27 -> Oct 31) is October's, so
+ * naming it after its first day would label — and overwrite — September.
+ */
+function majorityMonth_(dates) {
+  var tally = {}, bestKey = null;
+  for (var i = 0; i < dates.length; i++) {
+    var k = dates[i].getFullYear() + '-' + dates[i].getMonth();
+    tally[k] = (tally[k] || 0) + 1;
+    if (bestKey === null || tally[k] >= tally[bestKey]) bestKey = k;
   }
-  var from = fmt_(dates[0]);
-  var to = fmt_(dates[dates.length - 1]);
+  var bits = bestKey.split('-');
+  return new Date(Number(bits[0]), Number(bits[1]), 1);
+}
+
+/** Writes exactly from..to (inclusive) into the tab for that range's month. */
+function syncRange_(from, to) {
+  var tz = Session.getScriptTimeZone();
+  var first = parseYmd_(from);
+  var last = parseYmd_(to);
+  if (isNaN(first.getTime()) || isNaN(last.getTime()) || last < first) {
+    throw new Error('Invalid range ' + from + ' -> ' + to);
+  }
+  var dates = [];
+  for (var d = new Date(first.getTime()); d <= last; d.setDate(d.getDate() + 1)) {
+    dates.push(new Date(d.getTime()));
+  }
+  if (dates.length > 62) throw new Error('Range is longer than 62 days.');
+  var monthFirst = majorityMonth_(dates);
+  from = fmt_(dates[0]);
+  to = fmt_(dates[dates.length - 1]);
 
   var agents = sb_('agents', 'select=id,name,is_lead,is_specialist,active&active=eq.true&order=sort_order.asc.nullslast,name.asc');
   var rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
@@ -389,9 +433,9 @@ function syncMonth_(month, weeks) {
     bgs[lrow][0] = LEGEND_FILL[label] || fillFor_(label) || PAPER;
     fgs[lrow][0] = bgs[lrow][0] === PAPER ? '#000000' : inkFor_(label);
     if (time) {
-      for (var w = 0; w < weeks; w++) {
-        values[lrow][w * 7 + 1] = time;
-        fgs[lrow][w * 7 + 1] = '#20124d';
+      for (var lc = 1; lc < nCols; lc += 7) {
+        values[lrow][lc] = time;
+        fgs[lrow][lc] = '#20124d';
       }
     }
   }
