@@ -2408,7 +2408,6 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       setSyncing(false);
     }
   }
-  }
 
   const leads = agents.filter((a) => a.is_lead);
   // The roster this run actually schedules. With leads switched off they are
