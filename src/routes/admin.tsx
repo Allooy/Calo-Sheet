@@ -2564,6 +2564,12 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         coverage: useCoverage ? (coverage ?? defaultCoverage(genAgents.length)) : null,
       });
       setPreview(res);
+      // Every generation is its own draft copy in the sheet.
+      const id = typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      setDraft({ id, tab: null, status: "idle" });
+      draftSent.current = "";
       if (res.warnings.length) toast.warning(`${res.warnings.length} rule warning(s)`);
       else toast.success("Preview ready — all rules satisfied");
     } finally {
@@ -2595,6 +2601,68 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         : null,
     [effective, preview, agents, fixedOff],
   );
+
+  // ── Drafts: each generation is written to its own sheet tab (Copy 1, 2 …) ──
+  const [draft, setDraft] = useState<{
+    id: string; tab: string | null; status: "idle" | "saving" | "saved" | "sent" | "error"; error?: string;
+  } | null>(null);
+  const draftSent = useRef("");    // last payload sent, so unchanged edits don't resend
+  const draftBusy = useRef(false); // one request at a time; the latest state wins after
+
+  const draftPayload = useMemo(() => {
+    if (!preview || !draft) return null;
+    const byKey = new Map(effective.map((c) => [`${c.agent_id}|${c.date}`, c.shift_code]));
+    const rows: Record<string, string> = {};
+    for (const a of genAgents) {
+      rows[a.id] = preview.dates.map((d) => byKey.get(`${a.id}|${d}`) ?? "").join(",");
+    }
+    return JSON.stringify({
+      token: sheetToken,
+      action: "draft",
+      draftId: draft.id,
+      from: preview.dates[0],
+      to: preview.dates[preview.dates.length - 1],
+      rows,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview, effective, draft?.id, genAgents, sheetToken]);
+
+  async function sendDraft() {
+    if (!sheetUrl || !sheetToken || !draftPayload || !draft) return;
+    if (draftBusy.current || draftPayload === draftSent.current) return;
+    draftBusy.current = true;
+    const body = draftPayload;
+    const id = draft.id;
+    setDraft((d) => (d && d.id === id ? { ...d, status: "saving" } : d));
+    try {
+      const res = await fetch(sheetUrl, {
+        method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body,
+      });
+      draftSent.current = body;
+      try {
+        const j = await res.json();
+        setDraft((d) => (d && d.id === id
+          ? j.ok ? { ...d, tab: j.tab, status: "saved" } : { ...d, status: "error", error: j.error }
+          : d));
+      } catch {
+        // Sent, but the browser can't read Google's redirected reply.
+        setDraft((d) => (d && d.id === id ? { ...d, status: "sent" } : d));
+      }
+    } catch {
+      draftSent.current = body; // the request itself went out; see pushToSheet
+      setDraft((d) => (d && d.id === id ? { ...d, status: "sent" } : d));
+    } finally {
+      draftBusy.current = false;
+    }
+  }
+
+  // New draft: save right away. Edits: save once typing settles.
+  useEffect(() => {
+    if (!draftPayload || !sheetUrl || !sheetToken) return;
+    const t = setTimeout(() => void sendDraft(), draftSent.current ? 2500 : 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftPayload, draft?.status === "saving"]);
 
   function setCell(agentId: string, date: string, code: string) {
     setEdits((m) => {
@@ -3191,7 +3259,35 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       {/* Result */}
       {preview && s && (
         <GlassCard className="p-4 flex flex-col gap-3">
-          <div className="label-caps text-slate-500">Rule check</div>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="label-caps text-slate-500">Rule check</div>
+            {draft && (
+              <span
+                className={`text-[11px] font-semibold rounded-full px-2.5 py-1 border ${
+                  !sheetUrl || !sheetToken
+                    ? "bg-slate-50 text-slate-500 border-slate-200"
+                    : draft.status === "error"
+                      ? "bg-red-50 text-red-700 border-red-200"
+                      : draft.status === "saving"
+                        ? "bg-violet-50 text-violet-700 border-violet-200"
+                        : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                }`}
+                title="Every Generate is saved as its own tab in the Google Sheet; edits here update that tab."
+              >
+                {!sheetUrl || !sheetToken
+                  ? "Draft not saved — connect the Google Sheet"
+                  : draft.status === "saving"
+                    ? "Saving draft to sheet…"
+                    : draft.status === "error"
+                      ? `Draft not saved: ${draft.error}`
+                      : draft.status === "saved"
+                        ? `Draft saved · ${draft.tab}`
+                        : draft.status === "sent"
+                          ? "Draft sent to sheet (new “Copy” tab)"
+                          : "Draft ready"}
+              </span>
+            )}
+          </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <StatChip label="Work blocks" value={onlyKey(s.workBlocks, 5) ? "all 5 days" : "mixed"} good={onlyKey(s.workBlocks, 5)} />
             <StatChip label="Off blocks" value={onlyKey(s.offBlocks, 2) ? "all 2 days" : "mixed"} good={onlyKey(s.offBlocks, 2)} />

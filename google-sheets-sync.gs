@@ -42,6 +42,12 @@ function doPost(e) {
     if (!expected) return out({ ok: false, error: 'SYNC_TOKEN is not set on the script.' });
     if (body.token !== expected) return out({ ok: false, error: 'Bad token.' });
     var ymd = /^\d{4}-\d{2}-\d{2}$/;
+    if (body.action === 'draft') {
+      if (!ymd.test(body.from || '') || !ymd.test(body.to || '')) return out({ ok: false, error: 'Draft needs from/to.' });
+      if (!/^[A-Za-z0-9-]{8,64}$/.test(body.draftId || '')) return out({ ok: false, error: 'Draft needs a draftId.' });
+      var d = syncDraft(body.draftId, body.from, body.to, body.rows || {});
+      return out({ ok: true, tab: d.tab, agents: d.agents });
+    }
     if (ymd.test(body.from || '') && ymd.test(body.to || '')) {
       var nr = syncRange(body.from, body.to);
       return out({ ok: true, month: body.from + ' to ' + body.to, agents: nr });
@@ -338,6 +344,45 @@ function syncRange(from, to) {
   }
 }
 
+/**
+ * A generated draft, written to its own tab ("November 2026 – Copy 3") without
+ * touching the live month tab. rows = { agentId: "S1,S1,OFF,..." } in date order.
+ * The same draftId always rewrites the same tab, so edits made on the website
+ * land in the copy they belong to.
+ */
+function syncDraft(draftId, from, to, rows) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(45000)) {
+    throw new Error('Another sync is already running; try again in a moment.');
+  }
+  try {
+    return syncRange_(from, to, { id: draftId, rows: rows });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** The tab name for a draft: remembered per draftId, else the next free copy number. */
+function draftTabName_(ss, draftId, monthTitle) {
+  var props = PropertiesService.getScriptProperties();
+  var key = 'DRAFT_' + draftId;
+  var known = props.getProperty(key);
+  if (known) return known;
+  var prefix = monthTitle + ' – Copy ';
+  var top = 0;
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var nm = sheets[i].getName();
+    if (nm.indexOf(prefix) === 0) {
+      var n = parseInt(nm.slice(prefix.length), 10);
+      if (n > top) top = n;
+    }
+  }
+  var name = prefix + (top + 1);
+  props.setProperty(key, name);
+  return name;
+}
+
 /** "2026-10-15" -> local Date, avoiding the UTC shift of new Date(string). */
 function parseYmd_(s) {
   var p = String(s).split('-');
@@ -361,7 +406,7 @@ function majorityMonth_(dates) {
 }
 
 /** Writes exactly from..to (inclusive) into the tab for that range's month. */
-function syncRange_(from, to) {
+function syncRange_(from, to, draft) {
   var tz = Session.getScriptTimeZone();
   var first = parseYmd_(from);
   var last = parseYmd_(to);
@@ -382,10 +427,25 @@ function syncRange_(from, to) {
   for (var g = 0; g < auto.gyPool.length; g++) gyIds[auto.gyPool[g]] = true;
   var agents = sb_('agents', 'select=id,name,is_lead,active&active=eq.true&order=sort_order.asc.nullslast,name.asc')
     .filter(function (x) { return auto.generateLeads || !x.is_lead; });
-  var rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
   var byKey = {};
-  for (var j = 0; j < rows.length; j++) {
-    byKey[rows[j].agent_id + '|' + rows[j].date] = rows[j].shift_code;
+  var rows = [];
+  if (draft) {
+    // A draft carries its own cells and only the people it was generated for.
+    var ids = {};
+    for (var id in draft.rows) {
+      if (!Object.prototype.hasOwnProperty.call(draft.rows, id)) continue;
+      ids[id] = true;
+      var codes = String(draft.rows[id]).split(',');
+      for (var c0 = 0; c0 < dates.length && c0 < codes.length; c0++) {
+        if (codes[c0]) { byKey[id + '|' + fmt_(dates[c0])] = codes[c0]; rows.push(1); }
+      }
+    }
+    agents = agents.filter(function (x) { return ids[x.id]; });
+  } else {
+    rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
+    for (var j = 0; j < rows.length; j++) {
+      byKey[rows[j].agent_id + '|' + rows[j].date] = rows[j].shift_code;
+    }
   }
 
   var nCols = dates.length + 1;
@@ -469,7 +529,9 @@ function syncRange_(from, to) {
   // ── write ──
   var ss = SpreadsheetApp.openById(SHEET_ID);
   var title = Utilities.formatDate(monthFirst, tz, 'MMMM yyyy');
-  var sh = ss.getSheetByName(title) || ss.insertSheet(title);
+  if (draft) title = draftTabName_(ss, draft.id, title);
+  // New tabs go at the end, so drafts never push the live month out of place.
+  var sh = ss.getSheetByName(title) || ss.insertSheet(title, ss.getNumSheets());
   Logger.log('Writing tab "' + title + '"  range ' + from + ' -> ' + to +
              '  (' + agents.length + ' agents, ' + rows.length + ' shifts found)');
 
@@ -534,5 +596,6 @@ function syncRange_(from, to) {
   sh.setRowHeights(1, nRows, 21);
   sh.getRange(1, 2).setFontWeight('bold');
 
+  if (draft) return { tab: title, agents: agents.length };
   return agents.length;
 }
