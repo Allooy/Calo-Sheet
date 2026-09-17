@@ -30,6 +30,8 @@ import {
   Star,
   GripVertical,
   ArrowDownNarrowWide,
+  Eye,
+  EyeOff,
   Save,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -53,7 +55,8 @@ import { parseScheduleGrid, resolveAgentNames, type GridEntry } from "@/lib/impo
 import { parseLeaveGrid, resolveLeaveNames, aliasKey, groupLeaveRuns, type LeaveGrid, type NameAliases } from "@/lib/importLeave";
 import { ALL_SHIFT_CODES, categoryStyle, codeStyle, shiftCategory, shortCode } from "@/lib/shifts";
 import { useDragScroll } from "@/lib/useDragScroll";
-import { generateSchedule, auditSchedule, defaultCoverage, recommendCoverage, checkCoverage, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
+import { generateSchedule, auditSchedule, defaultCoverage, recommendCoverage, checkCoverage, feasibleOff, offCountsOf, bandOfCode, MORNING_CODES, EVENING_CODES, type GenResult } from "@/lib/generator";
+import { suggestNightFixes, type NightFixResult } from "@/lib/nightFix";
 import { loadSetting, saveSetting, readCached } from "@/lib/settings";
 
 const TABS = [
@@ -1419,6 +1422,17 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
   // follows the cursor in both axes; this keeps the row on the vertical axis
   // and slides the others aside to open the gap it will drop into.
   const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [hideInactive, setHideInactive] = useState(() => {
+    try { return localStorage.getItem("cx-agents-hide-inactive") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("cx-agents-hide-inactive", hideInactive ? "1" : "0"); } catch { /* optional */ }
+  }, [hideInactive]);
+  // Rows on screen. Dragging reorders these; hidden (inactive) agents keep their slots.
+  const shown = useMemo(
+    () => (hideInactive ? agents.filter((a) => a.active) : agents),
+    [agents, hideInactive],
+  );
   const dragRef = useRef<{ from: number; startY: number; slot: number } | null>(null);
   const [drag, setDrag] = useState<{ from: number; to: number; dy: number; slot: number } | null>(null);
 
@@ -1651,7 +1665,7 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     const st = dragRef.current;
     if (!st) return;
     const dy = e.clientY - st.startY;
-    const to = Math.max(0, Math.min(agents.length - 1, st.from + Math.round(dy / st.slot)));
+    const to = Math.max(0, Math.min(shown.length - 1, st.from + Math.round(dy / st.slot)));
     setDrag((d) => (d ? { ...d, dy, to } : d));
   }
 
@@ -1661,8 +1675,12 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
     dragRef.current = null;
     setDrag(null);
     if (!st || !d || d.to === st.from) return;
-    const next = [...agents];
-    next.splice(d.to, 0, next.splice(st.from, 1)[0]);
+    const moved = [...shown];
+    moved.splice(d.to, 0, moved.splice(st.from, 1)[0]);
+    // Put the visible rows back into the slots they occupied in the full list.
+    const visible = new Set(shown.map((a) => a.id));
+    let k = 0;
+    const next = agents.map((a) => (visible.has(a.id) ? moved[k++] : a));
     setAgents(next);
     void persistOrder(next);
   }
@@ -1726,7 +1744,7 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between px-1">
+      <div className="flex items-center justify-between gap-2 flex-wrap px-1">
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-500">
             {agents.length} total · {agents.filter((a) => a.active).length} active
@@ -1747,7 +1765,21 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
                   : "Custom order"}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {agents.some((a) => !a.active) && (
+            <button
+              onClick={() => setHideInactive((v) => !v)}
+              title={hideInactive ? "Show agents who are switched off" : "Hide agents who are switched off"}
+              className={`rounded-xl px-3 py-2 text-xs font-semibold flex items-center gap-1.5 active:scale-95 ${
+                hideInactive ? "bg-slate-700 text-white" : "glass text-slate-600"
+              }`}
+            >
+              {hideInactive ? <EyeOff size={14} /> : <Eye size={14} />}
+              {hideInactive
+                ? `Inactive hidden (${agents.filter((a) => !a.active).length})`
+                : "Hide inactive"}
+            </button>
+          )}
           <button
             onClick={sortByRank}
             title="Order by position: Shift Leads, Specialists, then Agents"
@@ -1828,7 +1860,7 @@ function AgentsTab({ adminEmail }: { adminEmail: string }) {
         {loading ? (
           Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-14" />)
         ) : (
-          agents.map((a, i) => (
+          shown.map((a, i) => (
             <GlassCard
               key={a.id}
               ref={(el) => { rowRefs.current[i] = el; }}
@@ -2153,7 +2185,14 @@ const GY_DEFAULTS = [
 ];
 const FIXED_DEFAULTS: Array<[string[], string]> = [
   [["ali", "jalal"], "S3"],
-  [["reem", "alraddia"], "S2"],
+  [["reem", "alraddia"], "S1"],
+  [["jawad"], "S5"],
+  [["mahmood"], "S5"],
+];
+// Weekdays (0 = Sunday) these people are always off.
+const FIXED_OFF_DEFAULTS: Array<[string[], number[]]> = [
+  [["jawad"], [1, 3]],   // Monday + Wednesday
+  [["mahmood"], [2, 3]], // Tuesday + Wednesday
 ];
 const CFG_KEY = "cx-automation-config";
 type AutoConfig = {
@@ -2165,6 +2204,10 @@ type AutoConfig = {
   useCoverage?: boolean;
   /** Off by default: leads' shifts are kept by hand in a separate sheet tab. */
   generateLeads?: boolean;
+  /** agentId -> weekdays always off. */
+  fixedOff?: Record<string, number[]>;
+  /** agentId -> band always worked (code still rotates inside it). */
+  fixedBand?: Record<string, "M" | "E">;
 };
 const WD_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const COV_CODES = ["S1", "S2", "S3", "S4", "S5", "S6"];
@@ -2223,6 +2266,11 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [offset, setOffset] = useState(0);
   const [gyPool, setGyPool] = useState<string[]>([]);
   const [fixed, setFixed] = useState<Record<string, string>>({});
+  const [fixedOff, setFixedOff] = useState<Record<string, number[]>>({});
+  const [fixedBand, setFixedBand] = useState<Record<string, "M" | "E">>({});
+  const [copyMonth, setCopyMonth] = useState(() => format(subMonths(new Date(), 1), "yyyy-MM"));
+  const [nightCheck, setNightCheck] = useState<NightFixResult | null>(null);
+  const [nightPick, setNightPick] = useState<Set<number>>(new Set());
   const [preview, setPreview] = useState<GenResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [showPool, setShowPool] = useState(false);
@@ -2277,14 +2325,35 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
       if (saved?.useCoverage) setUseCoverage(true);
       if (saved?.sheetUrl) setSheetUrl(saved.sheetUrl);
       if (saved?.sheetToken) setSheetToken(saved.sheetToken);
-      if (saved?.fixed) setFixed(saved.fixed);
-      else {
+      if (saved?.fixedBand) setFixedBand(saved.fixedBand);
+      if (saved?.fixedOff) setFixedOff(saved.fixedOff);
+      if (saved?.fixed && saved.fixedOff) setFixed(saved.fixed);
+      else if (saved?.fixed) {
+        // First load with personal days off: add the known people once, and
+        // bring Reem AlRaddia to S1. Anything set by hand before is kept.
+        const f: Record<string, string> = { ...saved.fixed };
+        const o: Record<string, number[]> = {};
+        for (const [toks, days] of FIXED_OFF_DEFAULTS) {
+          const m = list.find((a) => hits(a.name, toks));
+          if (m) { o[m.id] = days; f[m.id] = f[m.id] ?? "S5"; }
+        }
+        const reem = list.find((a) => hits(a.name, ["reem", "alraddia"]));
+        if (reem) f[reem.id] = "S1";
+        setFixed(f);
+        setFixedOff(o);
+      } else {
         const f: Record<string, string> = {};
         for (const [toks, code] of FIXED_DEFAULTS) {
           const m = list.find((a) => hits(a.name, toks));
           if (m) f[m.id] = code;
         }
         setFixed(f);
+        const o: Record<string, number[]> = {};
+        for (const [toks, days] of FIXED_OFF_DEFAULTS) {
+          const m = list.find((a) => hits(a.name, toks));
+          if (m) o[m.id] = days;
+        }
+        setFixedOff(o);
       }
       setLoading(false);
     })();
@@ -2295,11 +2364,11 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   useEffect(() => {
     if (loading) return;
     const t = setTimeout(async () => {
-      const err = await saveSetting(CFG_KEY, { gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage, generateLeads });
+      const err = await saveSetting(CFG_KEY, { gyPool, fixed, fixedOff, fixedBand, sheetUrl, sheetToken, coverage, useCoverage, generateLeads });
       setCfgError(err);
     }, 800);
     return () => clearTimeout(t);
-  }, [gyPool, fixed, sheetUrl, sheetToken, coverage, useCoverage, generateLeads, loading]);
+  }, [gyPool, fixed, fixedOff, fixedBand, sheetUrl, sheetToken, coverage, useCoverage, generateLeads, loading]);
 
   /**
    * Push the month to Google Sheets via the Apps Script web app.
@@ -2346,6 +2415,120 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     [agents, generateLeads],
   );
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+  // Personal days off for the people in this run only.
+  const activeFixedOff = useMemo(() => {
+    const out: Record<string, number[]> = {};
+    for (const a of genAgents) if (fixedOff[a.id]?.length) out[a.id] = fixedOff[a.id];
+    return out;
+  }, [genAgents, fixedOff]);
+
+  /**
+   * Fill the grid from a saved month: how many were on mornings, evenings and
+   * nights each weekday, scaled up for anyone on leave that day. Codes inside a
+   * band are split the usual way (mornings 2:1 S1:S2, evenings evenly), and the
+   * days off are snapped to the nearest set the rotation can produce.
+   */
+  async function copyCoverageFrom(ym: string) {
+    const first = parseISO(`${ym}-01`);
+    const rows = await fetchSchedulesInRange(format(first, "yyyy-MM-dd"), format(endOfMonth(first), "yyyy-MM-dd"));
+    const ids = new Set(genAgents.map((a) => a.id));
+    const sum = Array.from({ length: 7 }, () => ({ M: 0, E: 0, G: 0, days: 0 }));
+    const byDate = new Map<string, typeof rows>();
+    for (const r of rows) if (ids.has(r.agent_id)) (byDate.get(r.date) ?? byDate.set(r.date, []).get(r.date)!).push(r);
+    if (!byDate.size) return toast.error(`No saved schedule for ${format(first, "MMMM yyyy")}.`);
+    const n = genAgents.length;
+    for (const [date, list] of byDate) {
+      const wd = parseISO(date).getDay();
+      let m = 0, e = 0, g = 0, leave = 0;
+      for (const r of list) {
+        const b = bandOfCode(r.shift_code);
+        if (b === "M") m++; else if (b === "E") e++; else if (b === "G") g++;
+        else if (r.shift_code.trim().toUpperCase() !== "OFF") leave++;
+      }
+      const scale = n - leave > 0 ? n / (n - leave) : 1;
+      sum[wd].M += m * scale; sum[wd].E += e * scale; sum[wd].G += g; sum[wd].days++;
+    }
+    const avg = sum.map((x) => (x.days ? { M: x.M / x.days, E: x.E / x.days, G: x.G / x.days } : null));
+    const fo = offCountsOf(activeFixedOff);
+    const k = Object.keys(activeFixedOff).length;
+    const wantOff = avg.map((a, d) => (a ? Math.max(0, n - a.M - a.E - Math.round(a.G)) : 2 * n / 7) - fo[d]);
+    const off = feasibleOff(n - k, wantOff).off.map((o, d) => o + fo[d]);
+    const next = off.map((o, d) => {
+      const a = avg[d] ?? { M: 1, E: 1, G: 2 };
+      const g = Math.min(3, Math.max(2, Math.round(a.G)));
+      const day = Math.max(0, n - o - g);
+      const morning = Math.round(day * (a.M / Math.max(0.001, a.M + a.E)));
+      const evening = day - morning;
+      const s2 = Math.round(morning / 3);
+      const s5 = Math.round(evening / 2);
+      return { S1: morning - s2, S2: s2, S3: 0, S4: evening - s5, S5: s5, S6: g };
+    });
+    setUseCoverage(true);
+    setCoverage(next);
+    setPreview(null);
+    toast.success(`Headcount copied from ${format(first, "MMMM yyyy")} (${byDate.size} days)`);
+  }
+
+  /** Look at what is saved for this period and suggest how to hold 2-3 on nights. */
+  async function checkNights() {
+    setBusy(true);
+    try {
+      const from = format(start, "yyyy-MM-dd");
+      const to = format(end, "yyyy-MM-dd");
+      const rows = await fetchSchedulesInRange(format(addDays(start, -14), "yyyy-MM-dd"), to);
+      const ids = new Set(genAgents.map((a) => a.id));
+      const cells = rows.filter((r) => ids.has(r.agent_id));
+      if (!cells.some((c) => c.date >= from)) {
+        toast.error("Nothing saved for this period yet — generate and apply first, or upload the sheet.");
+        return;
+      }
+      const res = suggestNightFixes({
+        cells,
+        agents: genAgents.map((a) => ({ id: a.id, name: a.name })),
+        gyPool,
+        fixed,
+        from,
+        to,
+      });
+      setNightCheck(res);
+      setNightPick(new Set(res.edits.map((_, i) => i)));
+      if (!res.badDays.length) toast.success("Every night already has 2–3 people");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyNightFixes() {
+    if (!nightCheck) return;
+    const chosen = nightCheck.edits.filter((_, i) => nightPick.has(i));
+    if (!chosen.length) return;
+    const lines = chosen.map((e) =>
+      `• ${byId.get(e.agentId)?.name ?? "?"}: ${format(parseISO(e.from), "d MMM")}–${format(parseISO(e.to), "d MMM")} → ${e.code}`,
+    );
+    if (!window.confirm(`Apply ${chosen.length} change(s)?\n\n${lines.join("\n")}`)) return;
+    setBusy(true);
+    try {
+      for (const e of chosen) {
+        const days: string[] = [];
+        for (let d = parseISO(e.from); d <= parseISO(e.to); d = addDays(d, 1)) days.push(format(d, "yyyy-MM-dd"));
+        const { error: delErr } = await supabase.from("schedules").delete().eq("agent_id", e.agentId).in("date", days);
+        if (delErr) { toast.error(delErr.message); return; }
+        const { error } = await supabase.from("schedules").insert(
+          days.map((date) => ({ agent_id: e.agentId, date, shift_code: e.code })),
+        );
+        if (error) { toast.error(error.message); return; }
+      }
+      await supabase.from("audit_log").insert({
+        user_email: adminEmail, action: "night_fixes_applied",
+        details: { edits: chosen.map((e) => ({ agent_id: e.agentId, from: e.from, to: e.to, code: e.code })) },
+      });
+      toast.success(`${chosen.length} change(s) saved`);
+      setNightCheck(null);
+      if (sheetUrl && sheetToken) await pushToSheet(true);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function runPreview() {
     setBusy(true);
@@ -2380,6 +2563,8 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         endDate: to,
         gyPool,
         fixedShift: fixed,
+        fixedOff,
+        fixedBand,
         leave,
         offset,
         history,
@@ -2412,9 +2597,10 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             effective,
             preview.dates,
             genAgents.map((a) => ({ id: a.id, name: a.name, is_lead: a.is_lead })),
+            Object.keys(fixedOff).filter((id) => fixedOff[id]?.length),
           )
         : null,
-    [effective, preview, agents],
+    [effective, preview, agents, fixedOff],
   );
 
   function setCell(agentId: string, date: string, code: string) {
@@ -2592,6 +2778,23 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           label="Set headcount per shift"
           hint="Type how many people you want on each shift for each weekday. Leave off to use the pattern measured from your past sheets."
         />
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] font-semibold text-slate-600">Copy from a saved month</span>
+          <input
+            type="month" value={copyMonth} onChange={(e) => setCopyMonth(e.target.value)}
+            className="glass rounded-lg px-2 py-1 text-xs outline-none"
+          />
+          <button
+            onClick={() => copyMonth && void copyCoverageFrom(copyMonth)}
+            disabled={!copyMonth || busy || loading}
+            className="rounded-xl glass px-3 py-1.5 text-[11px] font-bold text-violet-700 active:scale-95 disabled:opacity-50"
+          >
+            Copy headcount
+          </button>
+          <span className="text-[11px] text-slate-500">
+            Uses that month's morning / evening / night numbers per weekday; codes stay mixed.
+          </span>
+        </div>
         {useCoverage && coverage && (
           <>
             <div className="overflow-x-auto show-scroll">
@@ -2645,7 +2848,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
               </table>
             </div>
             {(() => {
-              const v = checkCoverage(coverage, genAgents.length);
+              const v = checkCoverage(coverage, genAgents.length, activeFixedOff);
               return (
                 <div
                   className={`rounded-xl px-3 py-2 text-[11px] border ${
@@ -2655,7 +2858,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                   }`}
                 >
                   {v.ok ? (
-                    <span className="font-semibold">These numbers can be staffed by your {genAgents.length} genAgents.</span>
+                    <span className="font-semibold">These numbers can be staffed by your {genAgents.length} people.</span>
                   ) : (
                     <>
                       <span className="font-semibold">Not achievable. </span>
@@ -2684,6 +2887,8 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                     endDate: format(end, "yyyy-MM-dd"),
                     gyPool,
                     fixedShift: fixed,
+                    fixedOff,
+                    fixedBand,
                     offset,
                   });
                   setCoverage(best);
@@ -2726,13 +2931,23 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
               <Crown size={11} /> {a.name}
             </span>
           ))}
-          {Object.entries(fixed).map(([id, code]) => (
-            <span key={id} className="text-[11px] font-semibold rounded-full px-2.5 py-1 bg-slate-100 text-slate-600 border border-slate-200">
-              {byId.get(id)?.name ?? "?"} · fixed {code}
-            </span>
-          ))}
+          {agents
+            .filter((a) => fixed[a.id] || fixedBand[a.id] || fixedOff[a.id]?.length)
+            .map((a) => {
+              const parts = [
+                fixed[a.id]
+                  ? `always ${fixed[a.id]}`
+                  : fixedBand[a.id] === "M" ? "mornings only" : fixedBand[a.id] === "E" ? "evenings only" : null,
+                fixedOff[a.id]?.length ? `off ${fixedOff[a.id].map((d) => WD_LABELS[d]).join(" + ")}` : null,
+              ].filter(Boolean);
+              return (
+                <span key={a.id} className="text-[11px] font-semibold rounded-full px-2.5 py-1 bg-slate-100 text-slate-600 border border-slate-200">
+                  {a.name} · {parts.join(" · ")}
+                </span>
+              );
+            })}
         </div>
-        {leads.length < 4 && (
+        {generateLeads && leads.length < 4 && (
           <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
             Only {leads.length} lead(s) marked. 2–3 leads are needed on morning and evening every
             day, so at least 4 are required — mark more with the crown in the Agents tab.
@@ -2761,30 +2976,149 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             </div>
             <div>
               <div className="text-[11px] font-semibold text-slate-500 mb-1.5">
-                Fixed shift — these agents never rotate
+                Personal rules — shift and days off per person
               </div>
-              <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto show-scroll pr-1">
-                {agents.map((a) => (
-                  <div key={a.id} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 flex-1 truncate">{a.name}</span>
-                    <select
-                      value={fixed[a.id] ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setFixed((f) => { const n = { ...f }; if (v) n[a.id] = v; else delete n[a.id]; return n; });
-                        setPreview(null);
-                      }}
-                      className="glass rounded-lg px-2 py-1 text-[11px] outline-none shrink-0"
-                    >
-                      <option value="">rotates</option>
-                      {ALL_SHIFT_CODES.filter((c) => /^S[0-9.]+$/.test(c)).map((c) => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
+              <div className="text-[11px] text-slate-500 mb-2 leading-snug">
+                <b>Shift:</b> rotates normally, stays on mornings or evenings (still moving between
+                S1/S2/S3 or S4/S5), or one fixed code. <b>Days off:</b> tap weekdays to fix them
+                (e.g. Mon + Wed); leave all unticked to rotate. People with fixed days off or a
+                fixed band never work nights.
               </div>
+              <div className="flex flex-col gap-1.5 max-h-80 overflow-y-auto show-scroll pr-1">
+                {genAgents.map((a) => {
+                  const shiftVal = fixed[a.id] ?? (fixedBand[a.id] ? `band:${fixedBand[a.id]}` : "");
+                  const days = fixedOff[a.id] ?? [];
+                  return (
+                    <div key={a.id} className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-slate-600 flex-1 min-w-[120px] truncate">{a.name}</span>
+                      <select
+                        value={shiftVal}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setFixed((f) => { const n = { ...f }; delete n[a.id]; if (/^S/.test(v)) n[a.id] = v; return n; });
+                          setFixedBand((f) => {
+                            const n = { ...f }; delete n[a.id];
+                            if (v === "band:M") n[a.id] = "M";
+                            if (v === "band:E") n[a.id] = "E";
+                            return n;
+                          });
+                          setPreview(null);
+                        }}
+                        className="glass rounded-lg px-2 py-1 text-[11px] outline-none shrink-0"
+                      >
+                        <option value="">rotates</option>
+                        <option value="band:M">mornings only</option>
+                        <option value="band:E">evenings only</option>
+                        {ALL_SHIFT_CODES.filter((c) => /^S[0-9.]+$/.test(c)).map((c) => (
+                          <option key={c} value={c}>always {c}</option>
+                        ))}
+                      </select>
+                      <div className="flex gap-0.5 shrink-0" title="Fixed days off">
+                        {WD_LABELS.map((l, d) => {
+                          const on = days.includes(d);
+                          return (
+                            <button
+                              key={l}
+                              onClick={() => {
+                                setFixedOff((f) => {
+                                  const cur = f[a.id] ?? [];
+                                  const nextDays = on ? cur.filter((x) => x !== d) : [...cur, d].sort();
+                                  const n = { ...f };
+                                  if (nextDays.length) n[a.id] = nextDays; else delete n[a.id];
+                                  return n;
+                                });
+                                setPreview(null);
+                              }}
+                              className={`w-7 h-6 rounded-md text-[10px] font-bold border transition-colors ${
+                                on ? "bg-violet-600 text-white border-violet-600" : "bg-white/60 text-slate-400 border-slate-200"
+                              }`}
+                            >{l.slice(0, 2)}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {Object.values(activeFixedOff).some((d) => d.length !== 2) && (
+                <div className="mt-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                  Someone has {""}
+                  {Object.entries(activeFixedOff).filter(([, d]) => d.length !== 2).map(([id, d]) => `${byId.get(id)?.name} (${d.length})`).join(", ")}
+                  {" "}fixed days off — usually it's 2.
+                </div>
+              )}
             </div>
+          </div>
+        )}
+      </GlassCard>
+
+      {/* Nights check on what is saved */}
+      <GlassCard className="p-4 flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div>
+            <div className="label-caps text-slate-500">Check nights</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">
+              Looks at the schedule already saved for {format(start, "d MMM")} – {format(end, "d MMM yyyy")} (generated
+              or uploaded) and suggests the fewest changes to keep 2–3 on S6 every night.
+            </div>
+          </div>
+          <button
+            onClick={() => void checkNights()} disabled={busy || loading}
+            className="rounded-xl glass px-3 py-2 text-xs font-bold text-violet-700 active:scale-95 disabled:opacity-50"
+          >
+            Check nights
+          </button>
+        </div>
+        {nightCheck && (
+          <div className="flex flex-col gap-2">
+            {nightCheck.badDays.length === 0 ? (
+              <div className="text-xs text-emerald-700 font-semibold">Every night has 2–3 people. Nothing to fix.</div>
+            ) : (
+              <>
+                <div className="text-xs text-slate-600">
+                  <b>Problem nights:</b>{" "}
+                  {nightCheck.badDays.map((b) => `${format(parseISO(b.date), "EEE d MMM")} (${b.count})`).join(" · ")}
+                </div>
+                {nightCheck.edits.length === 0 ? (
+                  <div className="text-xs text-amber-700">No change found that fixes these without someone outside the graveyard list.</div>
+                ) : nightCheck.edits.map((e, i) => (
+                  <label key={i} className="flex items-start gap-2 text-xs rounded-lg border border-slate-100 px-2.5 py-2 cursor-pointer">
+                    <input
+                      type="checkbox" className="mt-0.5"
+                      checked={nightPick.has(i)}
+                      onChange={() => setNightPick((p) => { const n = new Set(p); if (n.has(i)) n.delete(i); else n.add(i); return n; })}
+                    />
+                    <span className="flex-1">
+                      <b>{byId.get(e.agentId)?.name ?? "?"}</b>: {format(parseISO(e.from), "d MMM")}–{format(parseISO(e.to), "d MMM")}{" "}
+                      {[...new Set(e.before.filter(Boolean))].join("/")} → <b>{e.code}</b>
+                      {e.partial && <span className="ml-1 text-amber-700">(part of a week)</span>}
+                      <span className="block text-slate-500">{e.reason}</span>
+                    </span>
+                  </label>
+                ))}
+                {nightCheck.unresolved.length > 0 && (
+                  <div className="text-[11px] text-amber-700">
+                    Still short after these: {nightCheck.unresolved.map((d) => format(parseISO(d), "d MMM")).join(", ")}
+                  </div>
+                )}
+                {nightCheck.notes.map((n, i) => (
+                  <div key={i} className="text-[11px] text-slate-500">• {n}</div>
+                ))}
+                {nightCheck.edits.length > 0 && (
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => setNightCheck(null)} className="rounded-xl glass px-3 py-2 text-xs font-semibold text-slate-600">
+                      Dismiss
+                    </button>
+                    <button
+                      onClick={() => void applyNightFixes()} disabled={busy || nightPick.size === 0}
+                      className="rounded-xl bg-violet-600 text-white px-4 py-2 text-xs font-bold active:scale-95 disabled:opacity-50"
+                    >
+                      Apply {nightPick.size} change(s){sheetUrl && sheetToken ? " + sync sheet" : ""}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
       </GlassCard>
