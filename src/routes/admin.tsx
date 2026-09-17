@@ -2238,6 +2238,34 @@ function Toggle({ on, set, label, hint }: {
   );
 }
 
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+
+/** Month + year dropdowns; value is "yyyy-MM". */
+function MonthPicker({ value, onChange, small }: {
+  value: string; onChange: (v: string) => void; small?: boolean;
+}) {
+  const [y, m] = value.split("-").map(Number);
+  const thisYear = new Date().getFullYear();
+  const years = [thisYear - 1, thisYear, thisYear + 1, thisYear + 2];
+  if (!years.includes(y)) years.push(y);
+  years.sort();
+  const cls = small
+    ? "glass rounded-lg px-2 py-1 text-xs outline-none"
+    : "glass rounded-xl px-3 py-2 text-sm outline-none";
+  const set = (yy: number, mm: number) => onChange(`${yy}-${String(mm).padStart(2, "0")}`);
+  return (
+    <div className="flex gap-1.5">
+      <select value={m} onChange={(e) => set(y, Number(e.target.value))} className={cls} aria-label="Month">
+        {MONTH_NAMES.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
+      </select>
+      <select value={y} onChange={(e) => set(Number(e.target.value), m)} className={cls} aria-label="Year">
+        {years.map((yy) => <option key={yy} value={yy}>{yy}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function StatChip({ label, value, good }: { label: string; value: string; good: boolean }) {
   return (
     <div className={`rounded-xl px-3 py-2 border ${good ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
@@ -2278,10 +2306,12 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const previewScroll = useRef<HTMLDivElement>(null);
   useDragScroll(previewScroll);
 
-  // The period defaults to the 1st–28th of the chosen month; startOverride wins
-  // when set, so a period can begin on any date.
+  // The period for a month defaults to the 27th of the month before through the
+  // 28th of the month itself (November = 27 Oct – 28 Nov). Either date can be
+  // overridden, so a period can begin and end on any day.
   const [startOverride, setStartOverride] = useState<string | null>(null);
-  const anchor = useMemo(() => parseISO(`${month}-01`), [month]);
+  const anchor = useMemo(() => addDays(subMonths(parseISO(`${month}-01`), 1), 26), [month]);
+  const defaultEnd = useMemo(() => addDays(parseISO(`${month}-01`), 27), [month]);
   const start = useMemo(
     () => (startOverride ? parseISO(startOverride) : anchor),
     [startOverride, anchor],
@@ -2290,8 +2320,10 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   // period can be any length — half a month, or the 15th to the 31st.
   const [endOverride, setEndOverride] = useState<string | null>(null);
   const end = useMemo(
-    () => (endOverride ? parseISO(endOverride) : addDays(start, 27)),
-    [endOverride, start],
+    () => (endOverride
+      ? parseISO(endOverride)
+      : defaultEnd >= start ? defaultEnd : addDays(start, 27)),
+    [endOverride, start, defaultEnd],
   );
   const spanDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
   const endBeforeStart = spanDays < 1;
@@ -2766,10 +2798,9 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-semibold text-slate-500">Month</label>
-            <input
-              type="month" value={month}
-              onChange={(e) => { setMonth(e.target.value); setStartOverride(null); setEndOverride(null); setPreview(null); }}
-              className="glass rounded-xl px-3 py-2 text-sm outline-none"
+            <MonthPicker
+              value={month}
+              onChange={(v) => { setMonth(v); setStartOverride(null); setEndOverride(null); setPreview(null); }}
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -2800,7 +2831,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                 onClick={() => { setStartOverride(null); setEndOverride(null); setPreview(null); }}
                 className="text-[10px] font-semibold text-violet-600 underline mt-0.5"
               >
-                reset to {format(anchor, "d")}–{format(addDays(anchor, 27), "d MMM")}
+                reset to {format(anchor, "d MMM")} – {format(defaultEnd, "d MMM")}
               </button>
             )}
           </div>
@@ -2860,10 +2891,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
         />
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[11px] font-semibold text-slate-600">Copy from a saved month</span>
-          <input
-            type="month" value={copyMonth} onChange={(e) => setCopyMonth(e.target.value)}
-            className="glass rounded-lg px-2 py-1 text-xs outline-none"
-          />
+          <MonthPicker value={copyMonth} onChange={setCopyMonth} small />
           <button
             onClick={() => copyMonth && void copyCoverageFrom(copyMonth)}
             disabled={!copyMonth || busy || loading}
