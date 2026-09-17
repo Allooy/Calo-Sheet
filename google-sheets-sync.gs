@@ -240,10 +240,32 @@ var TEXT_OVERRIDE = {
   'PUBLIC HOLIDAY': '#75070c', 'EID OFF': '#75070c', 'TRAINING': '#75070c'
 };
 
-// Name-cell colour encodes job title, matching the source sheet.
+// Name-cell colour. Blue marks the graveyard-eligible agents (the pool picked in
+// the website's Automation tab); leads keep their own colour when shown.
 var NAME_LEAD       = { bg: '#d5a6bd', fg: '#000000' }; // CX Shift Lead
-var NAME_SPECIALIST = { bg: '#bde0fe', fg: '#000000' }; // CX Specialist
+var NAME_GRAVEYARD  = { bg: '#bde0fe', fg: '#000000' }; // graveyard-eligible
 var NAME_NORMAL     = { bg: '#f9f6f6', fg: '#b5838d' }; // CX Agent
+
+/**
+ * The website's Automation settings (graveyard pool, whether leads are
+ * generated). Missing or unreadable settings fall back to the old behaviour:
+ * everyone listed, nobody blue.
+ */
+function automationConfig_() {
+  try {
+    var rows = sb_('app_settings', 'select=value&key=eq.cx-automation-config', true);
+    var v = (rows[0] && rows[0].value) || {};
+    return {
+      gyPool: v.gyPool || [],
+      // Leads are left out unless the website says to generate them; their
+      // table is kept by hand in its own tab, which this script never touches.
+      generateLeads: v.generateLeads === true,
+    };
+  } catch (e) {
+    Logger.log('Automation settings unreadable: ' + e);
+    return { gyPool: [], generateLeads: true };
+  }
+}
 
 // Daily headcount printed under the roster, so cover can be read per column.
 var SUMMARY = [
@@ -355,7 +377,11 @@ function syncRange_(from, to) {
   from = fmt_(dates[0]);
   to = fmt_(dates[dates.length - 1]);
 
-  var agents = sb_('agents', 'select=id,name,is_lead,is_specialist,active&active=eq.true&order=sort_order.asc.nullslast,name.asc');
+  var auto = automationConfig_();
+  var gyIds = {};
+  for (var g = 0; g < auto.gyPool.length; g++) gyIds[auto.gyPool[g]] = true;
+  var agents = sb_('agents', 'select=id,name,is_lead,active&active=eq.true&order=sort_order.asc.nullslast,name.asc')
+    .filter(function (x) { return auto.generateLeads || !x.is_lead; });
   var rows = sb_('schedules', 'select=agent_id,date,shift_code&date=gte.' + from + '&date=lte.' + to);
   var byKey = {};
   for (var j = 0; j < rows.length; j++) {
@@ -393,7 +419,7 @@ function syncRange_(from, to) {
   for (var a = 0; a < agents.length; a++) {
     var row = HEADER_ROW + a;
     var skin = agents[a].is_lead ? NAME_LEAD
-              : (agents[a].is_specialist ? NAME_SPECIALIST : NAME_NORMAL);
+              : (gyIds[agents[a].id] ? NAME_GRAVEYARD : NAME_NORMAL);
     values[row][0] = agents[a].name;
     bgs[row][0] = skin.bg;
     fgs[row][0] = skin.fg;
