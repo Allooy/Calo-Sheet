@@ -3368,14 +3368,32 @@ function LeaveTab({ adminEmail }: { adminEmail: string }) {
   const windowFrom = format(addDays(new Date(), -60), "yyyy-MM-dd");
   const windowTo = format(addDays(new Date(), 240), "yyyy-MM-dd");
 
+  // Agents load on their own so the form and upload work straight away.
+  useEffect(() => {
+    supabase.from("agents").select("*").eq("active", true)
+      .order("sort_order", { ascending: true, nullsFirst: false }).order("name")
+      .then(({ data }) => setAgents((data as Agent[] | null) ?? []));
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
-    const [a, rows] = await Promise.all([
-      supabase.from("agents").select("*").eq("active", true)
-        .order("sort_order", { ascending: true, nullsFirst: false }).order("name"),
-      fetchSchedulesInRange(windowFrom, windowTo),
-    ]);
-    setAgents((a.data as Agent[] | null) ?? []);
+    // Only leave rows: the full schedule over this window is ~10k rows, which
+    // took many sequential pages and held the whole tab up.
+    const rows: Schedule[] = [];
+    for (let page = 0; page < 50; page++) {
+      const { data, error } = await supabase
+        .from("schedules")
+        .select("*")
+        .gte("date", windowFrom)
+        .lte("date", windowTo)
+        .or(LEAVE_CODES.map((c) => `shift_code.ilike.${c.replace(/ /g, "*")}`).join(","))
+        .order("date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(page * 1000, page * 1000 + 999);
+      if (error) { toast.error(`Couldn't load leave: ${error.message}`); break; }
+      rows.push(...((data as Schedule[] | null) ?? []));
+      if (!data || data.length < 1000) break;
+    }
     // Collapse consecutive days of the same leave code into one run.
     const leave = rows
       .filter((r) => LEAVE_CODES.some((c) => c.toUpperCase() === r.shift_code.trim().toUpperCase()))
