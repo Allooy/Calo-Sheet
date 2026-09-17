@@ -10,8 +10,9 @@ import { addDays, format, parseISO } from "date-fns";
  * the weekend here, so OFF is deliberately heavier then rather than flat.
  */
 
-// Off-per-day weights, Sun..Sat, measured from the real sheets.
-export const WEEKDAY_OFF_WEIGHTS = [6.5, 6.5, 8.6, 8.7, 11.0, 16.8, 13.2];
+// Off-per-day weights, Sun..Sat, measured from the October 2026 sheet the team
+// chose as its baseline: Sunday almost fully staffed, days off mostly Wed–Sat.
+export const WEEKDAY_OFF_WEIGHTS = [1.5, 6.8, 6.2, 9.5, 9.2, 11.6, 10.2];
 
 // A "pair" p is an agent's 2 consecutive off days: weekdays p and (p+1)%7.
 // Holding one pair for the whole period is what produces an exact 5-on/2-off
@@ -175,6 +176,8 @@ export function recommendCoverage(
   const fixedOffOn = offCountsOf(base.fixedOff);
   let best: { coverage: Array<Record<string, number>>; issues: Issue[]; score: number } | null = null;
   for (const depth of [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]) {
+    // Evening-heavy first (evenings carry more work); the first clean candidate
+    // wins, so the order is the preference.
     for (const share of [0.40, 0.43, 0.46, 0.48, 0.50, 0.53, 0.56]) {
       const coverage = candidateGrid(n, depth, share, fixedOffOn);
       const run = generateSchedule({ ...base, coverage, searchBudget: 30000 });
