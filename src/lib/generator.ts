@@ -39,6 +39,7 @@ const EVENING_MIX = ["S4", "S5"];
 const GY_PER_WEEK = 3; // 3 assigned → 2-3 actually on duty each day
 const GY_WINDOW_WEEKS = 1; // one week of nights, then the trio rotates out
 const MAX_GY_BLOCKS = 2;
+const WORK_RUN = 5;      // days worked in a row, never more
 const MAX_SAME_BAND = 2; // day-band weeks in a row before a switch is forced
 const STAY_COST = 4;     // extra shortfall needed to keep someone on a band again // ceiling on night stretches per agent per period
 // How far below target the other band must be before an agent stays put rather
@@ -314,6 +315,8 @@ function assignPairs(
   known: Map<string, number> = new Map(),
   offTarget?: number[],
   quota?: number[] | null,
+  /** Agents whose days off follow from last month's run and cannot be moved. */
+  pinned: Set<string> = new Set(),
 ): Map<string, number> {
   const pair = new Map<string, number>();
 
@@ -330,10 +333,12 @@ function assignPairs(
       return best;
     };
 
-    // Keep a carried pattern when its slot is still free.
+    // A run carried in from last month fixes when the days off fall, so those
+    // keep their slot even when the quota for that day is used up — moving them
+    // would make the run longer or shorter than five days.
     for (const a of agents) {
       const p = known.get(a.id);
-      if (p != null && left[p] > 0) take(a.id, p);
+      if (p != null && (pinned.has(a.id) || left[p] > 0)) take(a.id, p);
     }
     const rest = agents.filter((a) => !pair.has(a.id));
     // Leads and the graveyard pool need days off that do not coincide, so they
@@ -434,7 +439,16 @@ export function bandOfCode(code: string): Band | null {
   return null; // OFF, AL, SL, holidays …
 }
 
-type Carried = { pair: number | null; band: Band | null; code: string | null; midBlock: boolean };
+type Carried = {
+  pair: number | null;
+  band: Band | null;
+  code: string | null;
+  midBlock: boolean;
+  /** Days worked in a row immediately before the period (0 if the day before was off). */
+  runIn: number;
+  /** Days off in a row immediately before the period. */
+  offIn: number;
+};
 
 /**
  * Read an agent's rhythm off the tail of the previous month.
@@ -476,7 +490,26 @@ function derivePrev(agentId: string, history: Record<string, string>, start: Dat
   const dayBefore = history[`${agentId}|${format(addDays(start, -1), "yyyy-MM-dd")}`];
   const midBlock = !!dayBefore && bandOfCode(dayBefore) !== null;
 
-  return { pair, band, code, midBlock };
+  // How the run going into the period stands. Counted from the cells
+  // themselves, which is what decides when the next days off are due — the
+  // weekday pattern alone cannot say whether someone is on day 2 or day 4.
+  // Leave says nothing about the run (it covers days off too), so a tail of
+  // leave leaves this unknown and the weekday pattern is used instead.
+  let runIn = 0, offIn = 0;
+  for (let k = 1; k <= 8; k++) {
+    const c = history[`${agentId}|${format(addDays(start, -k), "yyyy-MM-dd")}`];
+    if (!c) break;
+    const u = c.trim().toUpperCase();
+    const off = u === "OFF";
+    const work = bandOfCode(u) !== null;
+    if (!off && !work) { if (k === 1) { runIn = 0; offIn = 0; } break; } // leave
+    if (k === 1) { if (off) offIn = 1; else runIn = 1; continue; }
+    if (offIn) { if (off) offIn++; else break; }
+    else if (!off) runIn++;
+    else break;
+  }
+
+  return { pair, band, code, midBlock, runIn, offIn };
 }
 
 const overlap = (a: number, b: number) => PAIRS.some((d) => pairCovers(a, d) && pairCovers(b, d));
@@ -583,10 +616,28 @@ export function generateSchedule(input: GenInput): GenResult {
   const history = input.history ?? {};
   const carriedBy = new Map<string, Carried>();
   const knownPairs = new Map<string, number>();
+  // Someone's days off are due a set number of days after their run started, so
+  // the end of last month fixes the pattern exactly: 3 days worked into the
+  // period means 2 more, then the 2 days off. That beats guessing the pair from
+  // the weekday shape, and it is what keeps a run from reaching 6 days.
+  const dueOff = (c: Carried): number | null => {
+    if (c.runIn > 0) return c.runIn >= WORK_RUN ? startDow : (startDow + (WORK_RUN - c.runIn)) % 7;
+    if (c.offIn === 1) return (startDow + 6) % 7;      // second day off is day 1
+    if (c.offIn >= 2) return (startDow + 5) % 7;       // fresh run starts day 1
+    return null;
+  };
+  const pinnedPairs = new Set<string>();
   for (const a of sorted) {
     const c = derivePrev(a.id, history, start);
     carriedBy.set(a.id, c);
-    if (c.pair != null) knownPairs.set(a.id, c.pair);
+    const exact = offDaysOf(a.id) ? null : dueOff(c);
+    if (exact != null) { knownPairs.set(a.id, exact); pinnedPairs.add(a.id); }
+    else if (c.pair != null) knownPairs.set(a.id, c.pair);
+    if (c.runIn > WORK_RUN) {
+      warnings.push(
+        `${a.name} had already worked ${c.runIn} days in a row before ${startDate}; they start the period on their days off.`,
+      );
+    }
   }
   const cov = input.coverage ?? null;
   const offTarget = cov
@@ -604,7 +655,7 @@ export function generateSchedule(input: GenInput): GenResult {
       "That set of daily headcounts cannot be built from 5-on/2-off with two consecutive days off — the off numbers were fitted as closely as possible instead.",
     );
   }
-  const pair = assignPairs(pairAgents, gyPool, knownPairs, pairTarget, quota);
+  const pair = assignPairs(pairAgents, gyPool, knownPairs, pairTarget, quota, pinnedPairs);
   const offOn = (id: string, d: number) => {
     const own = offDaysOf(id);
     return own ? own.includes(wd(d)) : pairCovers(pair.get(id) ?? 0, wd(d));
@@ -755,6 +806,8 @@ export function generateSchedule(input: GenInput): GenResult {
   // block never mixes morning with evening. That is the rule that matters; the
   // exact code may still move within a band (S1 -> S2), as the real sheets do.
   const bandByDay = new Map<string, Array<Band | null>>();
+  // Days turned into days off purely to keep a run at five.
+  const forcedOffBy = new Map<string, Set<number>>();
   const prefByDay = new Map<string, Array<string | null>>();
   const seedCode = new Map<string, string>();
   // Live count of who is already on each band each day, so a block can be
@@ -771,11 +824,28 @@ export function generateSchedule(input: GenInput): GenResult {
   for (const a of sorted) {
     const isOff = (i: number) => offOn(a.id, i);
     const blocks: Array<{ start: number; end: number }> = [];
+    const forcedOff = new Set<number>();
+    forcedOffBy.set(a.id, forcedOff);
+    const carriedRun = carriedBy.get(a.id)?.runIn ?? 0;
     for (let i = 0; i < totalDays; ) {
       if (isOff(i)) { i++; continue; }
       let j = i;
       while (j < totalDays && !isOff(j)) j++;
-      blocks.push({ start: i, end: j - 1 });
+      // Nobody works more than five days in a row, whatever the pattern says —
+      // the run carried in from last month counts towards those five.
+      const already = i === 0 ? carriedRun : 0;
+      const cap = Math.max(0, WORK_RUN - already);
+      if (j - i > cap) {
+        const cutFrom = i + cap;
+        for (let d = cutFrom; d < j; d++) forcedOff.add(d);
+        warnings.push(
+          `${a.name}: ${dates[cutFrom]} onward was cut to keep the run at ${WORK_RUN} days` +
+          (already ? ` (${already} day(s) already worked before the period)` : "") + ".",
+        );
+        if (cap > 0) blocks.push({ start: i, end: cutFrom - 1 });
+      } else if (j > i) {
+        blocks.push({ start: i, end: j - 1 });
+      }
       i = j;
     }
     const carried = carriedBy.get(a.id);
@@ -1291,7 +1361,7 @@ export function generateSchedule(input: GenInput): GenResult {
       const lv = leave[`${a.id}|${date}`];
       let code: string;
       if (lv) code = lv; // leave overrides everything, matching how the sheets read
-      else if (offOn(a.id, d)) code = "OFF";
+      else if (offOn(a.id, d) || forcedOffBy.get(a.id)?.has(d)) code = "OFF";
       else if (fixedShift[a.id]) code = fixedShift[a.id];
       else if (bands[d] === "G") code = GY_CODE;
       else code = codeAt.get(`${a.id}|${d}`) ?? MORNING_MIX[0];
@@ -1301,7 +1371,8 @@ export function generateSchedule(input: GenInput): GenResult {
 
   const irregular = new Set(sorted.filter((a) => offDaysOf(a.id)).map((a) => a.id));
   const stats = buildStats(cells, dates, sorted, gyPool, irregular);
-  const all = warnings.concat(verify(cells, dates, sorted, gyPool, irregular));
+  // The same note can come from several blocks; say it once.
+  const all = Array.from(new Set(warnings.concat(verify(cells, dates, sorted, gyPool, irregular))));
 
   // Group the run's notes into one entry per rule, each carrying the cause and
   // the lever that changes it — a flat list of sentences is hard to act on.
@@ -1320,8 +1391,10 @@ export function generateSchedule(input: GenInput): GenResult {
   const grab = (test: (w: string) => boolean) => all.filter(test);
   const datesIn = (list: string[]) =>
     Array.from(new Set(list.flatMap((w) => w.match(/\d{4}-\d{2}-\d{2}/g) ?? [])));
+  // Whose names appear in these messages, matched against the real roster so
+  // two-word names are picked up too.
   const namesIn = (list: string[]) =>
-    Array.from(new Set(list.map((w) => w.split(" took ")[0]).filter((x) => !x.includes(" "))));
+    sorted.filter((a) => list.some((w) => w.includes(a.name))).map((a) => a.name);
 
   const nightsShort = grab((w) => w.includes("on nights for") && w.includes("wanted"));
   if (nightsShort.length) {
@@ -1339,13 +1412,13 @@ export function generateSchedule(input: GenInput): GenResult {
     issues.push({
       rule: "Night rest",
       level: "broken",
-      detail: `${nightsExtra.length} agent(s) worked more night stretches than the cap allows.`,
+      detail: `${namesIn(nightsExtra).join(", ")} worked more night stretches than the cap allows (${nightsExtra.length} time(s)).`,
       why:
         "Two on nights is a hard floor and outranks the rest rules, so when no rested eligible agent was available someone took an extra stretch." +
         because("graveyard-eligible agents", nightsAway, poolAgents.length),
       fix: "Add people to the graveyard-eligible list, or move some of that leave.",
       dates: datesIn(nightsExtra),
-      agents: nightsExtra.map((w) => w.split(" took ")[0]),
+      agents: namesIn(nightsExtra),
     });
   }
   const leadPinned = grab((w) => w.includes("is a shift lead pinned to"));
@@ -1368,6 +1441,42 @@ export function generateSchedule(input: GenInput): GenResult {
       fix: "Nothing to do — cover was kept. Turn off 'Continue from last month' to stop inheriting the pattern.",
     });
   }
+  const runBad = grab((w) => w.includes("days in a row from") || w.includes("day(s) off in a row from"));
+  if (runBad.length) {
+    issues.push({
+      rule: "5 on / 2 off",
+      level: "broken",
+      detail: runBad.join(" "),
+      why: "Everyone works five days then takes two together. A shorter or longer run means the pattern was cut — usually leave in the middle of a block, or days off that had to move to keep cover.",
+      fix: "Move the days off for that person (edit the cells below), or move the leave that splits the run. A run that touches the start or end of the period is not counted here.",
+      dates: datesIn(runBad),
+      agents: namesIn(runBad),
+    });
+  }
+  const cut = grab((w) => w.includes("was cut to keep the run at"));
+  if (cut.length) {
+    issues.push({
+      rule: "5 on / 2 off",
+      level: "short",
+      detail: cut.join(" "),
+      why: "The days off carried over from last month would have made the run longer than five days, so the extra days were turned into days off.",
+      fix: "Nothing to do — the run is five days. Check the person's first week if their days off matter to them.",
+      dates: datesIn(cut),
+      agents: namesIn(cut),
+    });
+  }
+  const already = grab((w) => w.includes("had already worked"));
+  if (already.length) {
+    issues.push({
+      rule: "5 on / 2 off",
+      level: "short",
+      detail: already.join(" "),
+      why: "Last month ended with a run longer than five days for them, so this period starts with their days off.",
+      fix: "Check the end of last month for that person; the days off here are correct given it.",
+      dates: datesIn(already),
+      agents: namesIn(already),
+    });
+  }
   const infeasible = grab((w) => w.includes("cannot be built from 5-on/2-off"));
   if (infeasible.length) {
     issues.push({
@@ -1382,7 +1491,10 @@ export function generateSchedule(input: GenInput): GenResult {
     cells, dates, sorted,
     sorted.filter((a) => lockBand(a.id) || offDaysOf(a.id) || fixedShift[a.id]).map((a) => a.id),
   ));
-  const covered = new Set([...nightsShort, ...nightsExtra, ...leadPinned, ...leadSpaced, ...infeasible]);
+  const covered = new Set([
+    ...nightsShort, ...nightsExtra, ...leadPinned, ...leadSpaced, ...infeasible,
+    ...runBad, ...cut, ...already,
+  ]);
   for (const w of all) {
     if (covered.has(w)) continue;
     const isLead = w.startsWith("Morning leads") || w.startsWith("Evening leads");
@@ -1405,6 +1517,7 @@ export function generateSchedule(input: GenInput): GenResult {
           ? "Add people to the graveyard-eligible list, or move some of that leave."
           : undefined,
       dates: datesIn([w]),
+      agents: namesIn([w]),
     });
   }
 
@@ -1614,9 +1727,11 @@ function verify(
 ): string[] {
   const out: string[] = [];
   const s = buildStats(cells, dates, agents, gyPool, irregular);
+  // One line per day, with the date, so every warning can point at it.
   const bad = (arr: number[], min: number, label: string) => {
-    const days = arr.filter((v) => v < min).length;
-    if (days) out.push(`${label}: below ${min} on ${days} of ${arr.length} days (min ${Math.min(...arr)}).`);
+    arr.forEach((v, i) => {
+      if (v < min) out.push(`${label}: ${v} on ${dates[i]} (needs ${min}).`);
+    });
   };
   bad(s.gyPerDay, 2, "Graveyard cover");
   // Leads can be left out of generation entirely (their table is kept by
@@ -1625,9 +1740,35 @@ function verify(
     bad(s.morningLeadsPerDay, 2, "Morning leads");
     bad(s.eveningLeadsPerDay, 2, "Evening leads");
   }
-  const offLens = Object.keys(s.offBlocks).map(Number).filter((k) => k !== 2);
-  if (offLens.length) out.push(`Off-blocks not equal to 2 days: ${offLens.join(", ")}.`);
-  const workLens = Object.keys(s.workBlocks).map(Number).filter((k) => k !== 5);
-  if (workLens.length) out.push(`Work-blocks not equal to 5 days: ${workLens.join(", ")}.`);
+  // Run lengths, named and dated: a 4- or 6-day run says who and from when.
+  for (const a of agents) {
+    if (irregular.has(a.id)) continue;
+    const seq = seqFor(cells, a.id, dates);
+    // Leave is written over days off as well as shifts, so a run that touches
+    // leave says nothing about the pattern and is left alone.
+    const kind = (c: string) => {
+      const u = (c ?? "").trim().toUpperCase();
+      if (!u) return "X";
+      if (u === "OFF") return "O";
+      return bandOfCode(u) ? "W" : "L";
+    };
+    for (let i = 0; i < seq.length; ) {
+      const k = kind(seq[i]);
+      let j = i;
+      while (j < seq.length && kind(seq[j]) === k) j++;
+      const len = j - i;
+      const touchesLeave =
+        (i > 0 && kind(seq[i - 1]) === "L") || (j < seq.length && kind(seq[j]) === "L");
+      const edge = i === 0 || j === seq.length || touchesLeave;
+      if (k === "X" || k === "L") { i = j; continue; }
+      if (!edge && k === "W" && len !== WORK_RUN) {
+        out.push(`${a.name} works ${len} days in a row from ${dates[i]} (should be ${WORK_RUN}).`);
+      }
+      if (!edge && k === "O" && len !== 2) {
+        out.push(`${a.name} has ${len} day(s) off in a row from ${dates[i]} (should be 2).`);
+      }
+      i = j;
+    }
+  }
   return out;
 }
