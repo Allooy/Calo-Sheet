@@ -256,6 +256,61 @@
   60%, 100% { transform: translateX(220%); }
 }
 
+/* ---------------------------------------------------------------------------
+ * Period card — the one panel that is touched on every visit, so it gets a
+ * little more care: a slow sheen across the header, pills that lift, the dates
+ * easing in when they change, and date inputs that unfold instead of appearing.
+ */
+.period-head {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: linear-gradient(120deg, rgba(124, 58, 237, 0.10), rgba(56, 189, 248, 0.08) 45%, rgba(124, 58, 237, 0.10));
+  background-size: 220% 100%;
+  animation: aurora-pan 18s ease-in-out infinite;
+}
+.period-head::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 38%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-120%);
+  animation: sheen 7s ease-in-out infinite;
+  pointer-events: none;
+}
+.dark .period-head::after {
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.10), transparent);
+}
+
+.period-dates {
+  animation: fade-in 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pill {
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.18s ease,
+    background-color 0.18s ease, color 0.18s ease;
+}
+.pill:hover { transform: translateY(-1px); }
+.pill:active { transform: translateY(0) scale(0.97); }
+.pill-on { box-shadow: 0 6px 18px rgba(124, 58, 237, 0.35); }
+
+/* Height animation without a fixed max-height: the row grows from 0fr to 1fr. */
+.unfold {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease;
+}
+.unfold > * { overflow: hidden; }
+.unfold-open { grid-template-rows: 1fr; opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .period-head, .period-head::after, .period-dates { animation: none; }
+  .pill, .unfold { transition: none; }
+}
+
 .skeleton {
   background: linear-gradient(90deg, rgba(0,0,0,0.04) 0%, rgba(0,0,0,0.08) 50%, rgba(0,0,0,0.04) 100%);
   background-size: 400px 100%;

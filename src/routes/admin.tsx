@@ -2840,7 +2840,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
 
       {/* Period */}
       <GlassCard className="p-4 flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="period-head flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="label-caps text-slate-500">Period</span>
             <MonthPicker
@@ -2848,9 +2848,12 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
               onChange={(v) => { setMonth(v); setStartOverride(null); setEndOverride(null); setPreview(null); }}
             />
           </div>
-          <div className="text-right">
+          <div
+            key={`${format(start, "yyyy-MM-dd")}|${format(end, "yyyy-MM-dd")}`}
+            className="period-dates text-right"
+          >
             <div className={`text-sm font-bold ${endBeforeStart ? "text-red-600" : "text-slate-700"}`}>
-              {format(start, "EEE d MMM")} → {format(end, "EEE d MMM yyyy")}
+              {format(start, "EEE d MMM")} <span className="text-violet-500">→</span> {format(end, "EEE d MMM yyyy")}
             </div>
             <div className="text-[11px] text-slate-500">
               {endBeforeStart ? "End date is before the start date" : `${spanDays} days`}
@@ -2873,8 +2876,8 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                   setEndOverride(format(p.to, "yyyy-MM-dd"));
                   setPreview(null);
                 }}
-                className={`text-[11px] font-semibold rounded-full px-3 py-1.5 border transition-colors ${
-                  on ? "bg-violet-600 text-white border-violet-600" : "glass text-slate-600 border-transparent"
+                className={`pill text-[11px] font-semibold rounded-full px-3 py-1.5 border ${
+                  on ? "pill-on bg-violet-600 text-white border-violet-600" : "glass text-slate-600 border-transparent"
                 }`}
               >
                 {p.label}
@@ -2883,7 +2886,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           })}
           <button
             onClick={() => setShowDates((v) => !v)}
-            className={`text-[11px] font-semibold rounded-full px-3 py-1.5 border transition-colors ${
+            className={`pill text-[11px] font-semibold rounded-full px-3 py-1.5 border ${
               showDates ? "bg-slate-700 text-white border-slate-700" : "glass text-slate-600 border-transparent"
             }`}
           >
@@ -2891,8 +2894,9 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
           </button>
         </div>
 
-        {showDates && (
-          <div className="flex items-end gap-2 flex-wrap">
+        <div className={`unfold ${showDates ? "unfold-open" : ""}`}>
+          <div>
+            <div className="flex items-end gap-2 flex-wrap pt-1 pb-1.5 px-0.5">
             <div className="flex flex-col gap-1">
               <label className="text-[11px] font-semibold text-slate-500">Start</label>
               <input
@@ -2910,19 +2914,20 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
                 className={`glass rounded-xl px-3 py-2 text-sm outline-none ${endBeforeStart ? "ring-2 ring-red-400" : ""}`}
               />
             </div>
-            {(startOverride || endOverride) && (
-              <button
-                onClick={() => { setStartOverride(null); setEndOverride(null); setPreview(null); }}
-                className="text-[11px] font-semibold text-violet-600 underline pb-2.5"
-              >
-                back to {format(anchor, "d MMM")} – {format(defaultEnd, "d MMM")}
-              </button>
-            )}
+              {(startOverride || endOverride) && (
+                <button
+                  onClick={() => { setStartOverride(null); setEndOverride(null); setPreview(null); }}
+                  className="text-[11px] font-semibold text-violet-600 underline pb-2.5"
+                >
+                  back to {format(anchor, "d MMM")} – {format(defaultEnd, "d MMM")}
+                </button>
+              )}
+            </div>
           </div>
-        )}
+        </div>
 
         {overlap && (
-          <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800">
+          <div className="period-dates rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800">
             <b>{format(parseISO(overlap.from), "d MMM")}
             {overlap.to !== overlap.from ? ` – ${format(parseISO(overlap.to), "d MMM")}` : ""}</b> belongs to
             last month and already has shifts for {overlap.people}{" "}
