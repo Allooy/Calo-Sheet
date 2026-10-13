@@ -2290,6 +2290,7 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
   const [fixedOff, setFixedOff] = useState<Record<string, number[]>>({});
   const [fixedBand, setFixedBand] = useState<Record<string, "M" | "E">>({});
   const [copyMonth, setCopyMonth] = useState(() => format(subMonths(new Date(), 1), "yyyy-MM"));
+  const [showDates, setShowDates] = useState(false);
   const [nightCheck, setNightCheck] = useState<NightFixResult | null>(null);
   const [nightPick, setNightPick] = useState<Set<number>>(new Set());
   const [preview, setPreview] = useState<GenResult | null>(null);
@@ -2839,62 +2840,99 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
 
       {/* Period */}
       <GlassCard className="p-4 flex flex-col gap-3">
-        <div className="label-caps text-slate-500">Period</div>
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold text-slate-500">Month</label>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="label-caps text-slate-500">Period</span>
             <MonthPicker
               value={month}
               onChange={(v) => { setMonth(v); setStartOverride(null); setEndOverride(null); setPreview(null); }}
             />
           </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold text-slate-500">Start date</label>
-            <input
-              type="date" value={format(start, "yyyy-MM-dd")}
-              onChange={(e) => { setStartOverride(e.target.value || null); setPreview(null); }}
-              className="glass rounded-xl px-3 py-2 text-sm outline-none"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-semibold text-slate-500">End date</label>
-            <input
-              type="date" value={format(end, "yyyy-MM-dd")}
-              min={format(start, "yyyy-MM-dd")}
-              onChange={(e) => { setEndOverride(e.target.value || null); setPreview(null); }}
-              className={`glass rounded-xl px-3 py-2 text-sm outline-none ${endBeforeStart ? "ring-2 ring-red-400" : ""}`}
-            />
-          </div>
-          <div className="rounded-xl bg-violet-50 border border-violet-200 px-3 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-500">Covers</div>
-            <div className="text-sm font-bold text-violet-800">
+          <div className="text-right">
+            <div className={`text-sm font-bold ${endBeforeStart ? "text-red-600" : "text-slate-700"}`}>
               {format(start, "EEE d MMM")} → {format(end, "EEE d MMM yyyy")}
-              <span className="font-semibold text-violet-500"> · {Math.max(0, spanDays)} days</span>
+            </div>
+            <div className="text-[11px] text-slate-500">
+              {endBeforeStart ? "End date is before the start date" : `${spanDays} days`}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {[
+            { label: "1st → 28th", from: parseISO(`${month}-01`), to: defaultEnd },
+            { label: "27th → 28th", from: anchor, to: defaultEnd },
+          ].map((p) => {
+            const on = format(start, "yyyy-MM-dd") === format(p.from, "yyyy-MM-dd")
+              && format(end, "yyyy-MM-dd") === format(p.to, "yyyy-MM-dd");
+            return (
+              <button
+                key={p.label}
+                onClick={() => {
+                  setStartOverride(format(p.from, "yyyy-MM-dd"));
+                  setEndOverride(format(p.to, "yyyy-MM-dd"));
+                  setPreview(null);
+                }}
+                className={`text-[11px] font-semibold rounded-full px-3 py-1.5 border transition-colors ${
+                  on ? "bg-violet-600 text-white border-violet-600" : "glass text-slate-600 border-transparent"
+                }`}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setShowDates((v) => !v)}
+            className={`text-[11px] font-semibold rounded-full px-3 py-1.5 border transition-colors ${
+              showDates ? "bg-slate-700 text-white border-slate-700" : "glass text-slate-600 border-transparent"
+            }`}
+          >
+            Pick dates
+          </button>
+        </div>
+
+        {showDates && (
+          <div className="flex items-end gap-2 flex-wrap">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold text-slate-500">Start</label>
+              <input
+                type="date" value={format(start, "yyyy-MM-dd")}
+                onChange={(e) => { setStartOverride(e.target.value || null); setPreview(null); }}
+                className="glass rounded-xl px-3 py-2 text-sm outline-none"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-semibold text-slate-500">End</label>
+              <input
+                type="date" value={format(end, "yyyy-MM-dd")}
+                min={format(start, "yyyy-MM-dd")}
+                onChange={(e) => { setEndOverride(e.target.value || null); setPreview(null); }}
+                className={`glass rounded-xl px-3 py-2 text-sm outline-none ${endBeforeStart ? "ring-2 ring-red-400" : ""}`}
+              />
             </div>
             {(startOverride || endOverride) && (
               <button
                 onClick={() => { setStartOverride(null); setEndOverride(null); setPreview(null); }}
-                className="text-[10px] font-semibold text-violet-600 underline mt-0.5"
+                className="text-[11px] font-semibold text-violet-600 underline pb-2.5"
               >
-                reset to {format(anchor, "d MMM")} – {format(defaultEnd, "d MMM")}
+                back to {format(anchor, "d MMM")} – {format(defaultEnd, "d MMM")}
               </button>
             )}
           </div>
-        </div>
+        )}
+
         {overlap && (
           <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800">
-            <b>Heads up:</b> {format(parseISO(overlap.from), "d MMM")}
-            {overlap.to !== overlap.from ? ` – ${format(parseISO(overlap.to), "d MMM")}` : ""} already has a
-            schedule for {overlap.people} {overlap.people === 1 ? "person" : "people"} ({overlap.days}{" "}
-            {overlap.days === 1 ? "day" : "days"}) — it belongs to the month before. Applying will
-            overwrite those days. Set the start date to{" "}
+            <b>{format(parseISO(overlap.from), "d MMM")}
+            {overlap.to !== overlap.from ? ` – ${format(parseISO(overlap.to), "d MMM")}` : ""}</b> belongs to
+            last month and already has shifts for {overlap.people}{" "}
+            {overlap.people === 1 ? "person" : "people"}. Applying overwrites them —{" "}
             <button
               className="underline font-semibold"
               onClick={() => { setStartOverride(format(parseISO(`${month}-01`), "yyyy-MM-dd")); setPreview(null); }}
             >
-              the 1st
-            </button>{" "}
-            to leave them alone.
+              start on the 1st instead
+            </button>.
           </div>
         )}
       </GlassCard>
