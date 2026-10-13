@@ -2449,6 +2449,30 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
     [agents, generateLeads],
   );
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+
+  // Days at the start of the period that already carry a schedule — usually the
+  // tail of the month before, which generating would rewrite.
+  const [overlap, setOverlap] = useState<{ days: number; people: number; from: string; to: string } | null>(null);
+  useEffect(() => {
+    let cancel = false;
+    const monthFirst = parseISO(`${month}-01`);
+    if (start >= monthFirst || loading) { setOverlap(null); return; }
+    const from = format(start, "yyyy-MM-dd");
+    const to = format(addDays(monthFirst, -1), "yyyy-MM-dd");
+    (async () => {
+      const ids = new Set(genAgents.map((a) => a.id));
+      const rows = (await fetchSchedulesInRange(from, to)).filter((r) => ids.has(r.agent_id));
+      if (cancel) return;
+      setOverlap(rows.length
+        ? {
+            days: new Set(rows.map((r) => r.date)).size,
+            people: new Set(rows.map((r) => r.agent_id)).size,
+            from, to,
+          }
+        : null);
+    })();
+    return () => { cancel = true; };
+  }, [month, start, genAgents, loading]);
   // Personal days off for the people in this run only.
   const activeFixedOff = useMemo(() => {
     const out: Record<string, number[]> = {};
@@ -2743,7 +2767,12 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
 
   async function apply() {
     if (!preview) return;
-    if (!confirm(`Replace the schedule for ${genAgents.length} agents from ${format(start, "MMM d")} to ${format(end, "MMM d, yyyy")}?`)) return;
+    const warn = overlap
+      ? `\n\n⚠ ${format(parseISO(overlap.from), "d MMM")}${overlap.to !== overlap.from ? ` – ${format(parseISO(overlap.to), "d MMM")}` : ""} already has a schedule for ${overlap.people} people (${overlap.days} day(s)) from the month before. Those days will be overwritten.`
+      : "";
+    if (!confirm(
+      `Replace the schedule for ${genAgents.length} agents from ${format(start, "MMM d")} to ${format(end, "MMM d, yyyy")}?${warn}`,
+    )) return;
     setBusy(true);
     try {
       const from = preview.dates[0];
@@ -2852,6 +2881,22 @@ function AutomationTab({ adminEmail }: { adminEmail: string }) {
             )}
           </div>
         </div>
+        {overlap && (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800">
+            <b>Heads up:</b> {format(parseISO(overlap.from), "d MMM")}
+            {overlap.to !== overlap.from ? ` – ${format(parseISO(overlap.to), "d MMM")}` : ""} already has a
+            schedule for {overlap.people} {overlap.people === 1 ? "person" : "people"} ({overlap.days}{" "}
+            {overlap.days === 1 ? "day" : "days"}) — it belongs to the month before. Applying will
+            overwrite those days. Set the start date to{" "}
+            <button
+              className="underline font-semibold"
+              onClick={() => { setStartOverride(format(parseISO(`${month}-01`), "yyyy-MM-dd")); setPreview(null); }}
+            >
+              the 1st
+            </button>{" "}
+            to leave them alone.
+          </div>
+        )}
       </GlassCard>
 
       {/* Options */}
